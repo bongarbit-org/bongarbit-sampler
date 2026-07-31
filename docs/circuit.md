@@ -125,13 +125,53 @@ GPIO7 (INPUT_PULLUP) ──● pad 3   ●── GND    (3.wav)
 
 - **Trigger (GPIO4):** debounce "espera estabilizar antes de disparar"
   (25ms) — dispara só depois da leitura ficar estável.
-- **Pads (GPIO5/6/7):** debounce invertido, via biblioteca Bounce2 (10ms).
-  O firmware dispara o som na primeira leitura bruta do pino, **antes** de
-  esperar o debounce estabilizar — zero atraso entre o toque físico e o
-  som. Só depois disso o pino fica bloqueado (ignorado) até o Bounce2
-  confirmar que o botão realmente voltou pro estado solto, o que evita
-  disparo repetido ("efeito metralhadora") enquanto o botão é segurado,
-  sem atrasar a resposta inicial.
+- **Pads (GPIO5/6/7):** sem biblioteca de debounce — as duas proteções leem
+  o pino **bruto**, e são independentes uma da outra:
+  - `PAD_CONFIRM_US` (200µs): o nível baixo precisa persistir esse tempo
+    antes de disparar. Rejeita glitch de EMI mais curto que a janela, ao
+    custo de 0,2ms de latência. Precisa ficar bem abaixo de um segmento de
+    quique (~300µs); com 1ms a janela só se satisfaz depois que o quique
+    inteiro assenta, e a latência vira 3ms.
+  - `PAD_RELEASE_MS` (3ms): depois de disparar, o pad só rearma quando o
+    pino ficar em alto continuamente por esse tempo. É o que evita o
+    disparo repetido ("efeito metralhadora") enquanto o botão é segurado.
+
+  Antes isso era feito com o estado *debounced* da Bounce2, e era bug: esse
+  estado atrasa em relação ao pino, então rearmar pelo nível redisparava
+  ~112 vezes por toque, e rearmar pela borda travava o pad de vez quando a
+  batida era mais curta que o intervalo de debounce. Medido em
+  `sim/trigger_sim.cpp`, que roda no PC sem placa.
+
+## Melhoria recomendada: debounce RC (ainda não montada)
+
+Com um pull-up externo e um capacitor, o quique some no hardware e o pino
+entrega bordas limpas. As constantes de tempo são assimétricas, que é
+exatamente o que um pad de percussão quer:
+
+```
+3V3 ──[R1 10k]──┬── GPIO ──[R2 220]── botão ── GND
+                │
+            [C 100nF]
+                │
+               GND
+```
+
+- **Batida (descida):** o capacitor descarrega por R2, τ ≈ 22µs —
+  praticamente instantâneo, ~1 amostra de áudio.
+- **Quique:** uma abertura de 300µs recarrega por R1 (τ = 1ms) e mal levanta
+  25% da tensão, sem cruzar o limiar. Filtrado.
+- **Soltura (subida):** τ = 1ms, ~1,4ms de atraso — irrelevante musicalmente.
+
+Ganhos: absorve glitch de EMI abaixo de ~1ms, e o pull-up de 10k no lugar do
+interno de ~45k baixa a impedância do fio em 4,5×. O maior ganho é em
+**jitter**: a descida vira monotônica e determinística, em vez de depender de
+qual microcontato do quique o polling pegou primeiro.
+
+Funciona porque as entradas GPIO do ESP32 têm Schmitt trigger — sem histerese,
+uma rampa lenta cruzando o limiar oscilaria.
+
+Não exige mudança de código: pode manter o `INPUT_PULLUP`, já que o interno
+em paralelo com o externo dá ~8,2k. O GPIO4 se beneficia igual.
 
 Cada pad toca o arquivo correspondente (`/1.wav`, `/2.wav`, `/3.wav`) na
 raiz do cartão SD, carregado inteiro na PSRAM no boot.

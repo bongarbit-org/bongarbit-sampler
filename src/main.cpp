@@ -25,7 +25,6 @@
 
 #include "M16.h"
 #include "Samp.h"
-#include <Bounce2.h>
 
 // --- Sample source: 1 = load one .wav from SD into RAM/PSRAM at boot,
 //                    0 = play from embedded flash array ---
@@ -60,20 +59,43 @@ SdFs sd;
 Wav  wav;
 
 // --- Extra pads: 1.wav / 2.wav / 3.wav on the SD card root ---
-// Each pad fires on the raw pin reading, immediately, without waiting for
-// debounce to settle. Bounce2 (10ms interval) runs alongside purely to
-// confirm a clean release before the pad is armed again - that's what
-// prevents the pad from re-firing every loop while held down, without
-// adding any latency to the initial trigger.
+// Each pad fires on the raw pin reading - no debounce filter in the trigger
+// path, so a strike costs PAD_CONFIRM_US of latency and nothing else.
+//
+// Two guards, both watching the RAW pin, deliberately independent of each
+// other so neither can silently disable the other:
+//  - PAD_CONFIRM_US: the LOW must persist this long before firing. Rejects EMI
+//    pulses shorter than the window. Keep it well under one contact-bounce
+//    segment (~300us on a typical tactile switch): if the window exceeds a
+//    segment it cannot be satisfied until the whole bounce settles, and the
+//    trigger latency becomes the bounce duration instead. Measured: 200us
+//    costs 0.2ms, 1ms costs 3ms.
+//  - PAD_RELEASE_MS: after firing, the pad rearms only once the pin has read
+//    HIGH continuously for this long. This is what stops re-fire during
+//    contact bounce.
+//
+// Both were previously derived from Bounce2's debounced state, and that was
+// the bug: the debounced state lags the pin by its interval, so a rearm
+// condition read from it fires immediately after the strike (level) or never
+// fires at all when the contact time is shorter than the interval (edge). Any
+// scheme built on that state couples correctness to the debounce constant.
+// These read the pin directly, so the failure modes stay bounded and
+// independent. All of this is measured in sim/trigger_sim.cpp.
 #define PAD_COUNT 3
-#define PAD_DEBOUNCE_MS 10
+#define PAD_CONFIRM_US 200
+#define PAD_RELEASE_MS 3
 const uint8_t   padPins[PAD_COUNT]  = {5, 6, 7};
 const char*     padFiles[PAD_COUNT] = {"/1.wav", "/2.wav", "/3.wav"};
-Bounce          padBounce[PAD_COUNT];
 Wav             padWav[PAD_COUNT];
 Samp            padSamp[PAD_COUNT];
 uint8_t         padChannels[PAD_COUNT] = {1, 1, 1};
 bool            padArmed[PAD_COUNT]    = {true, true, true};
+// micros() timestamps; all comparisons are unsigned differences so the ~71min
+// micros() wraparound is a non-event.
+bool            padPending[PAD_COUNT]     = {false, false, false};
+uint32_t        padPendingSince[PAD_COUNT] = {0, 0, 0};
+bool            padHighValid[PAD_COUNT]   = {false, false, false};
+uint32_t        padHighSince[PAD_COUNT]   = {0, 0, 0};
 #endif
 
 // --- Trigger button (see docs/circuit.md) ---
@@ -125,8 +147,6 @@ void setup() {
 
   for (uint8_t i = 0; i < PAD_COUNT; i++) {
     pinMode(padPins[i], INPUT_PULLUP);
-    padBounce[i].attach(padPins[i], INPUT_PULLUP);
-    padBounce[i].interval(PAD_DEBOUNCE_MS);
 
     if (!padWav[i].initSD(sd, SD_CS, SD_SCLK, SD_MISO, SD_MOSI, 16) ||
         !padWav[i].load(padFiles[i])) {
@@ -188,16 +208,29 @@ void loop() {
   lastRawReading = reading;
 
 #if USE_SD_SAMPLER
+  uint32_t padNow = micros();
   for (uint8_t i = 0; i < PAD_COUNT; i++) {
-    padBounce[i].update(); // must run every loop for Bounce2's own interval tracking to stay accurate
+    bool low = (digitalRead(padPins[i]) == LOW); // raw pin, never a filtered state
     if (padArmed[i]) {
-      if (digitalRead(padPins[i]) == LOW) { // raw, immediate - fires before/without waiting for debounce
+      if (!low) {
+        padPending[i] = false; // bounced back HIGH before confirming: a glitch, not a strike
+      } else if (!padPending[i]) {
+        padPending[i] = true;
+        padPendingSince[i] = padNow;
+      } else if ((uint32_t)(padNow - padPendingSince[i]) >= PAD_CONFIRM_US) {
         DBG("Pad %u: triggered\n", i + 1);
         padSamp[i].start();
-        padArmed[i] = false; // locked out until a debounced release is confirmed below
+        padArmed[i]    = false; // locked out until a clean release, below
+        padPending[i]  = false;
+        padHighValid[i] = false;
       }
-    } else if (padBounce[i].read() == HIGH) {
-      padArmed[i] = true; // debounce confirms a clean release - safe to fire again
+    } else if (low) {
+      padHighValid[i] = false; // still held (or bouncing): restart the release window
+    } else if (!padHighValid[i]) {
+      padHighValid[i] = true;
+      padHighSince[i] = padNow;
+    } else if ((uint32_t)(padNow - padHighSince[i]) >= PAD_RELEASE_MS * 1000UL) {
+      padArmed[i] = true; // pin has read HIGH continuously - safe to fire again
     }
   }
 #endif
