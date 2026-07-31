@@ -215,6 +215,24 @@ void setup() {
   Serial.begin(115200);
   delay(500);
 
+  // PSRAM is the single most important thing this log can confirm, and its
+  // absence used to be silent. M16's psramAllocSafe() has no internal-RAM
+  // fallback, so without PSRAM every Wav::load() below fails and the only
+  // symptom is "WAV: failed to load" with no stated cause - which sends you
+  // debugging the SD wiring for a build configuration problem. Report it
+  // before anything can depend on it, and shout when it is missing (same
+  // convention as the SD failure below: errors are unconditional, successes
+  // go through DBG).
+  size_t psramTotal = ESP.getPsramSize();
+  if (psramTotal == 0) {
+    Serial.println("PSRAM: NOT AVAILABLE - samples cannot load. This is a "
+                   "board/build configuration problem, not wiring: check that "
+                   "platformio.ini still has board = esp32-s3-devkitc1-n16r8");
+  } else {
+    DBG("PSRAM: %u bytes free of %u\n",
+        (unsigned)ESP.getFreePsram(), (unsigned)psramTotal);
+  }
+
   pinMode(TRIGGER_PIN, INPUT_PULLUP);
 
 #if USE_SD_SAMPLER

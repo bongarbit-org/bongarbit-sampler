@@ -170,20 +170,8 @@ Estado dos interruptores de compilação, como estão hoje em
 | `LATENCY_PROBE` | 0 | fase E |
 | `DMA_BUFFER_LENGTH` | 64 (5,8 ms) | fase G |
 
-### Recomendado: uma linha a mais no boot
-
-O log **não imprime o tamanho da PSRAM**. Se ela não inicializar, o sintoma vai
-ser o `WAV` falhando ao carregar, sem dizer o motivo — e PSRAM é a coisa mais
-importante a confirmar na fase B. Acrescente no `setup()`, logo depois do
-`Serial.begin()`:
-
-```c
-DBG("PSRAM: %u bytes livres de %u\n",
-    (unsigned)ESP.getFreePsram(), (unsigned)ESP.getPsramSize());
-```
-
-Deve reportar ~8 MB. Se reportar 0, pare tudo: o problema é configuração de
-board, não fiação.
+Nada a mudar antes da fase D. O firmware já reporta a PSRAM no boot — ver a
+fase B.
 
 ---
 
@@ -212,7 +200,7 @@ Multímetro em continuidade, placa desligada.
 Aperte reset e leia. Esperado, na ordem:
 
 ```
-PSRAM: ~8388608 bytes livres de 8388608      (se acrescentou a linha)
+PSRAM: 8386295 bytes free of 8388608
 SD: init OK
 WAV: loaded '<nome>' - 1 ch, 44100 Hz, N frames (~M ms)
 Pad 1: loaded '/1.wav' - ...
@@ -228,6 +216,18 @@ Critério: chegou em `Ready.` com os quatro carregados.
 
 Isto valida, pela primeira vez: PSRAM inicializa, o cartão monta, o SdFat lê,
 os `.wav` cabem na memória. Nenhuma dessas coisas tinha prova.
+
+**Se a primeira linha for isto, pare aqui:**
+
+```
+PSRAM: NOT AVAILABLE - samples cannot load. This is a board/build
+configuration problem, not wiring: check that platformio.ini still has
+board = esp32-s3-devkitc1-n16r8
+```
+
+Não adianta mexer em fio nenhum. A `psramAllocSafe()` da M16 não tem fallback
+para RAM interna, então sem PSRAM todo `Wav::load()` falha — e o sintoma
+seguinte seria um `WAV: failed to load` que parece problema de cartão.
 
 ### Fase C — primeiro som
 
@@ -478,7 +478,8 @@ Preencha durante o dia. O objetivo do projeto inteiro é ter estes números.
 | Placa não aparece no `pio device monitor` | cabo USB só de carga; ou falta `-DARDUINO_USB_MODE=1` (já está no `platformio.ini`) |
 | Monitor vazio, mas firmware roda | `ARDUINO_USB_CDC_ON_BOOT` — Serial foi para UART0, que não está ligada em nada |
 | `SD: init FAILED` | fiação SPI, ou cartão não FAT32. Rode o `sd_test` para isolar |
-| `WAV: failed to load` | PSRAM não inicializou (o `.wav` não coube), ou arquivo corrompido |
+| `PSRAM: NOT AVAILABLE` | configuração de board, **não** fiação — confira `board =` no `platformio.ini` |
+| `WAV: failed to load`, com PSRAM OK | arquivo corrompido, ou `.wav` maior que a PSRAM livre |
 | Log limpo, nenhum som | `XSMT` baixo ou flutuando; alimentação do DAC; GND não comum |
 | Chiado ou estalo contínuo | ring de DMA raso demais — suba `DMA_BUFFER_LENGTH` |
 | Estalo só no rolo de 4 vozes | mesma coisa, no caminho mais pesado |
