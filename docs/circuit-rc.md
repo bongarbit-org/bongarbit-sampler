@@ -11,21 +11,39 @@ O resto do circuito — DAC PCM5102A, leitor microSD, alimentação, terra comum
 
 Um botão mecânico não liga limpo: as lâminas quicam, e em ~2 ms o pino vê uma
 sequência de abre-fecha em vez de um evento único. Hoje isso é filtrado no
-firmware, e funciona. O que o software **não** consegue fazer:
+firmware, e funciona. O que o RC acrescenta:
 
+- **O pino passa a ver um evento único.** Simulado: uma prensada com 2 ms de
+  quique produz **14 transições** no pino sem o RC e **2** com ele (uma descida,
+  uma subida). O software para de precisar adivinhar qual transição é a batida.
 - **Jitter.** Disparar na primeira leitura baixa significa disparar em qualquer
   microcontato que o polling pegar primeiro — a incerteza é a estrutura do
-  quique mais o período do loop, tranquilamente centenas de µs. Com o RC a
-  descida vira monotônica e determinística, e o jitter cai para só o período do
-  loop, ~50 µs. Em percussão, variação de tempo incomoda mais que latência
-  absoluta: latência você compensa tocando adiantado, variação não.
-- **Ruído captado no fio.** O pull-up interno do ESP32 é fraco (~45 kΩ). Num
-  jumper de protoboard isso é uma antena de alta impedância, no mesmo circuito
-  que um BCK de I2S chaveando a ~2,8 MHz. Um pico que leve o pino a baixo por
-  alguns microssegundos vira uma batida fantasma.
+  quique mais o período do loop. Com o RC a descida vira monotônica e
+  determinística, e a incerteza cai para só o período do loop. Em percussão,
+  variação de tempo incomoda mais que latência absoluta: latência você compensa
+  tocando adiantado, variação não.
+- **Impedância do fio.** O pull-up interno do ESP32 é fraco (~45 kΩ). Num jumper
+  de protoboard isso é uma antena de alta impedância, no mesmo circuito que um
+  BCK de I2S chaveando a ~2,8 MHz. Trocar por 10 kΩ em paralelo (≈8,2 kΩ
+  efetivos) reduz a captação em ~5×.
 
-O ganho maior é esse segundo: **um bumbo tocando sozinho do nada é um defeito
-muito pior que 1 ms de atraso.**
+### O que ele NÃO faz
+
+**O RC não substitui o `PAD_CONFIRM_US` como defesa contra batida fantasma.**
+Simulando um glitch como fechamento momentâneo de contato, o filtro só rejeita
+pulsos abaixo de ~20 µs; de 50 µs para cima o pino cruza o limiar e o disparo
+acontece. A constante de descida é rápida **de propósito** — é o que mantém a
+batida instantânea — e ela é rápida para qualquer coisa que aterre o pino, não
+só para o seu dedo.
+
+Ruído de fato irradiado, acoplado capacitivamente, é bem mais atenuado que
+isso, porque chega por impedância altíssima e o capacitor o curto-circuita.
+Mas esse caso **não está simulado aqui**, então não trate como número: trate o
+RC como redutor da *probabilidade* de captação, e a janela de confirmação no
+software como a rejeição de fato.
+
+Resumo: o RC resolve quique e jitter (medido); o software resolve glitch
+(medido). São defesas complementares, não redundantes.
 
 ## Lista de compras
 
@@ -61,15 +79,24 @@ Repetir os quatro: GPIO4 (trigger), GPIO5, GPIO6, GPIO7 (pads).
 Esse é o ponto que faz o circuito servir tão bem para um pad de percussão.
 Descida e subida passam por caminhos diferentes, com τ muito diferentes:
 
+Valores efetivos, já contando o pull-up interno de ~45 kΩ em paralelo com R1
+(≈8,2 kΩ) e o limiar Schmitt do ESP32 (V_IL 0,82 V / V_IH 2,47 V):
+
 | Evento | Caminho da corrente | τ | Efeito prático |
 |---|---|---|---|
-| **Batida** (descida) | capacitor descarrega por **R2** | **22 µs** | Praticamente instantâneo — ~1 amostra de áudio. A latência da batida não é afetada |
-| **Quique durante a batida** | recarrega por **R1** | 1 ms | Uma abertura de 300 µs mal levanta 25% da tensão, longe do limiar. O pino nem percebe |
-| **Soltura** (subida) | carrega por **R1** | 1 ms | ~1,4 ms até cruzar o limiar. Musicalmente irrelevante |
+| **Batida** (descida) | capacitor descarrega por **R2** | **21 µs** | Alvo de 86 mV. Latência medida na simulação: **+50 µs** ponta a ponta, ~2 amostras de áudio |
+| **Quique durante a batida** | recarrega por **R1** | 818 µs | Uma abertura de 300 µs mal levanta a tensão, longe do limiar. O pino nem percebe |
+| **Soltura** (subida) | carrega por **R1** | 818 µs | ~1,2 ms até cruzar V_IH. Musicalmente irrelevante |
 | **Quique na soltura** | qualquer refechamento zera o capacitor | — | A subida só completa quando o quique realmente acaba |
 
 Ou seja: **rápido na batida, filtrado na soltura** — exatamente a forma que a
 lógica dos pads quer, e você ganha de graça, pela física.
+
+**Limite do filtro:** ele absorve segmentos de quique de até ~1 ms. A partir de
+~3 ms de abertura o capacitor tem tempo de carregar além do limiar e o quique
+volta a aparecer (simulado: 14 transições de novo). Switch de qualidade quica em
+0,1–1 ms, então isso cobre o caso normal; se o seu switch estiver muito gasto,
+o caminho é aumentar C — ao custo proporcional de latência na batida.
 
 Funciona porque as entradas GPIO do ESP32 têm **Schmitt trigger**. Sem
 histerese, uma rampa lenta cruzando o limiar oscilaria e produziria várias
@@ -122,10 +149,19 @@ verificando que nada piora:
    há garantia de que os quatro RC ficaram bem contactados, e defesa em
    profundidade custa 0,2 ms.
 
-**Teste de ruído.** Com tudo montado e o áudio tocando, passe a mão perto dos
-fios dos botões, mexa nos jumpers, ligue algo indutivo por perto (furadeira,
-motor, fonte chaveada). Não pode sair batida nenhuma. Esse é o cenário que o
-RC existe para cobrir e que nenhum ajuste de software resolve.
+Os quatro passos acima estão validados na simulação (`--sweep=rc`): com o RC,
+mesmo `confirm 0 / release 0` dá **1 disparo por batida**, enquanto o pino cru
+nessa configuração dá 7.
+
+**Teste de ruído — com os valores restaurados.** Com tudo montado, `confirm` de
+volta em 200 µs e o áudio tocando, passe a mão perto dos fios dos botões, mexa
+nos jumpers, ligue algo indutivo por perto (furadeira, motor, fonte chaveada).
+Não pode sair batida nenhuma.
+
+Faça este teste **depois** de restaurar, não durante o passo 3: a rejeição de
+glitch vem da janela de confirmação no software, não do RC (ver "O que ele NÃO
+faz"). Com `confirm 0` você estaria testando o pad justamente sem a proteção
+que cobre esse cenário.
 
 ## Depois que estiver funcionando
 
@@ -136,7 +172,11 @@ confirmar na bancada, não antes:
   estabilizar". São 25 ms de latência que o RC torna desnecessários. Migrar o
   GPIO4 para o mesmo esquema dos pads é o maior ganho de latência que sobrou no
   projeto.
-- `PAD_CONFIRM_US` e `PAD_RELEASE_MS` podem cair, se o teste acima confirmar.
+- `PAD_RELEASE_MS` pode cair de 3 para 1 ms — o RC já garante a soltura limpa,
+  e isso aumenta a taxa máxima de rolo.
+- **`PAD_CONFIRM_US` não deve cair.** Ele custa 0,2 ms e é a única defesa
+  medida contra batida fantasma; o RC não cobre esse caso. Baixe só durante o
+  passo 3 do teste, e restaure.
 
 Antes de mexer nos números, vale rodar o simulador para ver o que cada valor
 faz — ele roda no PC, sem placa:

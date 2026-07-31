@@ -152,8 +152,10 @@ Um pull-up externo de 10k, um resistor de 220 ohms em série e um capacitor de
 As constantes de tempo são assimétricas — instantâneo na batida, filtrado na
 soltura — que é exatamente a forma que um pad de percussão quer.
 
-Ganha-se sobretudo **jitter** e imunidade a ruído captado no fio, que são
-justamente as duas coisas que ajuste de software nenhum alcança.
+Ganha-se **quique** e **jitter**: simulado, uma prensada que produz 14
+transições no pino passa a produzir 2, ao custo de 50 µs de latência. Não
+substitui o `PAD_CONFIRM_US` contra batida fantasma — as defesas são
+complementares, e o motivo está no guia.
 
 Guia de montagem completo, com lista de compras, esquema, passo a passo e como
 testar sem osciloscópio: **[circuit-rc.md](circuit-rc.md)**.

@@ -20,6 +20,7 @@
  */
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -87,6 +88,80 @@ static Trace makeGlitch(const std::string& name, uint64_t width_us) {
     t.edges.push_back({50000, PIN_LOW});
     t.edges.push_back({50000 + width_us, PIN_HIGH});
     return t; // no hits: every fire is spurious by construction
+}
+
+// --- Hardware RC debounce (docs/circuit-rc.md) --------------------------
+//
+//        3V3 --[R1]--+-- GPIO          R1 in parallel with the ESP32's
+//                    |                 internal INPUT_PULLUP (~45k)
+//                    +--[R2]-- switch -- GND
+//                    |
+//                   [C]
+//                    |
+//                   GND
+//
+// Switch open:   node charges toward VDD through R1,        tau = R1*C
+// Switch closed: node decays toward VDD*R2/(R1+R2),         tau = (R1||R2)*C
+//
+// The two time constants land on opposite edges, which is the whole point:
+// the strike is fast, the release is filtered. Integrated numerically and
+// passed through a Schmitt trigger, then handed to the same schemes as any
+// other trace - so the comparison is like for like.
+
+struct RCParams {
+    double r_pullup   = 10000;   // R1, external
+    double r_series   = 220;     // R2, in series with the switch
+    double c_farad    = 100e-9;  // C
+    double r_internal = 45000;   // ESP32 INPUT_PULLUP, in parallel with R1; 0 disables
+    double vdd        = 3.3;
+    double vih_frac   = 0.75;    // ESP32 datasheet logic levels
+    double vil_frac   = 0.25;
+};
+
+struct RCDerived { double rup, tau_open_us, tau_closed_us, v_closed, vih, vil; };
+
+static RCDerived rcDerive(const RCParams& p) {
+    RCDerived d;
+    d.rup = (p.r_internal > 0) ? (p.r_pullup * p.r_internal) / (p.r_pullup + p.r_internal)
+                               : p.r_pullup;
+    double rth_closed = (d.rup * p.r_series) / (d.rup + p.r_series);
+    d.v_closed      = p.vdd * p.r_series / (d.rup + p.r_series);
+    d.tau_open_us   = d.rup * p.c_farad * 1e6;
+    d.tau_closed_us = rth_closed * p.c_farad * 1e6;
+    d.vih = p.vdd * p.vih_frac;
+    d.vil = p.vdd * p.vil_frac;
+    return d;
+}
+
+// Turn an ideal switch trace into what the GPIO actually sees through the RC.
+// Integrated at step_us (1us default; must be small next to tau_closed).
+static Trace applyRC(const Trace& in, const RCParams& p, uint64_t step_us = 1) {
+    RCDerived d = rcDerive(p);
+    Trace out;
+    out.name        = in.name;
+    out.hits        = in.hits;
+    out.duration_us = in.duration_us;
+
+    double dt       = (double)step_us * 1e-6;
+    double a_open   = 1.0 - std::exp(-dt / (d.tau_open_us   * 1e-6));
+    double a_closed = 1.0 - std::exp(-dt / (d.tau_closed_us * 1e-6));
+
+    double v     = p.vdd;
+    int    logic = PIN_HIGH;
+    size_t ei    = 0;      // walk input edges forward instead of rescanning
+    int    sw    = PIN_HIGH;
+
+    for (uint64_t t = 0; t < in.duration_us; t += step_us) {
+        while (ei < in.edges.size() && in.edges[ei].t_us <= t) sw = in.edges[ei++].level;
+        if (sw == PIN_LOW) v += (d.v_closed - v) * a_closed;
+        else               v += (p.vdd      - v) * a_open;
+
+        int nl = logic;                       // Schmitt: hysteresis between the two
+        if      (v >= d.vih) nl = PIN_HIGH;
+        else if (v <= d.vil) nl = PIN_LOW;
+        if (nl != logic) { logic = nl; out.edges.push_back({t, logic}); }
+    }
+    return out;
 }
 
 // --- Scheme A: GPIO4, wait-for-stable (src/main.cpp:174) ----------------
@@ -621,6 +696,108 @@ static void sweepGlitch(Config c) {
     printf("  %22s %14.3f\n", "wait-stable 25ms",      f.meanLat_ms());
 }
 
+// --- Sweep E: does the hardware RC actually deliver? --------------------
+
+static void sweepRC(Config c) {
+    RCParams p;
+    RCDerived d = rcDerive(p);
+
+    printf("\n########## SWEEP E - hardware RC debounce ##########\n");
+    printf("R1=%.0f (|| %.0f internal = %.0f), R2=%.0f, C=%.0fnF\n",
+           p.r_pullup, p.r_internal, d.rup, p.r_series, p.c_farad * 1e9);
+    printf("  tau strike (discharge)  = %6.1f us   -> target %.0f mV\n",
+           d.tau_closed_us, d.v_closed * 1000);
+    printf("  tau release (charge)    = %6.1f us   -> target %.0f mV\n",
+           d.tau_open_us, p.vdd * 1000);
+    printf("  Schmitt: VIL=%.2fV  VIH=%.2fV\n", d.vil, d.vih);
+
+    // 1. How many transitions does the pin actually see?
+    printf("\n--- edges the GPIO sees, per press (bounce 2ms / 6 segments) ---\n");
+    printf("  %-14s %14s %14s\n", "trace", "raw edges", "through RC");
+    for (double seg_ms : {0.1, 0.333, 1.0, 3.0}) {
+        Trace t{"", {}, {}, 400000};
+        addPress(t, 10000, (uint64_t)(seg_ms * 6000), 150000, 6);
+        Trace f = applyRC(t, p);
+        char lbl[32]; snprintf(lbl, sizeof lbl, "seg %.2fms", seg_ms);
+        printf("  %-14s %14d %14d%s\n", lbl, (int)t.edges.size(),
+               (int)f.edges.size(), f.edges.size() == 2 ? "   <- clean" : "");
+    }
+
+    // 2. What does the filter cost on the strike?
+    printf("\n--- trigger latency, raw pin vs through RC (ms) ---\n");
+    printf("  %-22s %12s %12s %10s\n", "scheme", "raw", "with RC", "delta");
+    {
+        Trace t{"", {}, {}, 400000};
+        addPress(t, 10000, 2000, 150000, 6);
+        Trace f = applyRC(t, p);
+        struct { const char* n; double raw, rc; } rows[] = {
+            {"release+confirm 200us",
+             run(t, RawFireRelease{c.release_ms, c.confirm_us}, c.loop_us).meanLat_ms(),
+             run(f, RawFireRelease{c.release_ms, c.confirm_us}, c.loop_us).meanLat_ms()},
+            {"release only (no confirm)",
+             run(t, RawFireRelease{c.release_ms}, c.loop_us).meanLat_ms(),
+             run(f, RawFireRelease{c.release_ms}, c.loop_us).meanLat_ms()},
+        };
+        for (auto& r : rows)
+            printf("  %-22s %12.3f %12.3f %10.3f\n", r.n, r.raw, r.rc, r.rc - r.raw);
+    }
+
+    // 3. The verification procedure written into docs/circuit-rc.md: with the
+    //    RC in place, deliberately weakened firmware settings should still
+    //    behave. If this table does not hold, that procedure is wrong.
+    printf("\n--- docs/circuit-rc.md test: weaken the firmware, does RC cover? ---\n");
+    printf("  fires/expected, single press, bounce 2ms/6seg\n");
+    printf("  %-26s %12s %12s\n", "firmware setting", "raw pin", "with RC");
+    {
+        Trace t{"", {}, {}, 400000};
+        addPress(t, 10000, 2000, 150000, 6);
+        Trace f = applyRC(t, p);
+        struct { const char* n; uint32_t rel; uint64_t conf; } cfgs[] = {
+            {"confirm 200us, release 3ms", 3, 200},
+            {"confirm 0,     release 3ms", 3, 0},
+            {"confirm 0,     release 1ms", 1, 0},
+            {"confirm 0,     release 0ms", 0, 0},
+        };
+        for (auto& cf : cfgs) {
+            Result a = run(t, RawFireRelease{cf.rel, cf.conf}, c.loop_us);
+            Result b = run(f, RawFireRelease{cf.rel, cf.conf}, c.loop_us);
+            printf("  %-26s %8d/1    %8d/1  %s\n", cf.n, a.fires, b.fires,
+                   b.fires == 1 ? "ok" : "FAIL");
+        }
+    }
+
+    // 4. Glitch absorption. Modelled as a momentary contact closure, which is
+    //    pessimistic: real coupled EMI arrives through a much higher impedance
+    //    than a closed switch, so the cap shunts it harder than this shows.
+    printf("\n--- EMI glitch absorbed? (fires; 0 = rejected) ---\n");
+    printf("  %10s %14s %14s\n", "width us", "raw pin", "with RC");
+    for (uint64_t w : {10ULL, 50ULL, 100ULL, 200ULL, 500ULL, 1000ULL, 2000ULL,
+                       5000ULL, 10000ULL}) {
+        Trace t = makeGlitch("", w);
+        Trace f = applyRC(t, p);
+        int a = run(t, RawFireRelease{c.release_ms}, c.loop_us).fires;              // no confirm
+        int b = run(f, RawFireRelease{c.release_ms}, c.loop_us).fires;
+        printf("  %10llu %14d %14d %s\n", (unsigned long long)w, a, b,
+               b == 0 ? "rejected" : "PHANTOM");
+    }
+
+    // 5. I claimed the RC would rescue rose() if PAD_DEBOUNCE_MS came down.
+    //    Check it, because it was asserted from theory.
+    printf("\n--- does RC rescue the rose() scheme? (missed of %d, 300ms apart) ---\n",
+           c.hits);
+    printf("  %9s | %11s %11s | %11s %11s\n", "hold ms",
+           "rose db=10 raw", "  +RC", "rose db=1 raw", "  +RC");
+    for (uint64_t hold : {2ULL, 5ULL, 8ULL, 12ULL, 20ULL, 40ULL}) {
+        Trace t = makeRoll("", c.hits, 300000, 2000, hold * 1000, 6);
+        Trace f = applyRC(t, p);
+        printf("  %9llu | %11d %11d | %11d %11d\n", (unsigned long long)hold,
+               run(t, RawFireRose{{10}}, c.loop_us, 300000).missed,
+               run(f, RawFireRose{{10}}, c.loop_us, 300000).missed,
+               run(t, RawFireRose{{1}},  c.loop_us, 300000).missed,
+               run(f, RawFireRose{{1}},  c.loop_us, 300000).missed);
+    }
+}
+
 // --- main ---------------------------------------------------------------
 
 static bool isNumeric(const char* s) {
@@ -662,5 +839,6 @@ int main(int argc, char** argv) {
     if (sweep == "retrigger" || sweep == "all") { sweepRetriggerDetail(c); sweepRetriggerMatrix(c); }
     if (sweep == "bounce"    || sweep == "all") sweepBounce(c);
     if (sweep == "glitch"    || sweep == "all") sweepGlitch(c);
+    if (sweep == "rc"        || sweep == "all") sweepRC(c);
     return 0;
 }
