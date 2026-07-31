@@ -1,10 +1,16 @@
 /*
- * test_trigger.cpp - Unit suite for the trigger conditioning in src/main.cpp,
- * exercised through the shared model in sim/trigger_model.h.
+ * test_trigger.cpp - Unit suite for the firmware's trigger conditioning.
  *
  *     pio test -e native
  *
  * Runs on the host. No board, no upload.
+ *
+ * The scheme under test is TriggerInput from src/trigger_input.h - the actual
+ * struct the board runs, compiled into this binary, not a transcription of it.
+ * sim/trigger_model.h supplies the scaffolding around it: pin traces, the RC
+ * filter model, the scoring runner, and models of the two DESIGNS THAT WERE
+ * REJECTED. Those last ones are copies on purpose - they no longer exist in
+ * the firmware, and their whole job is to keep failing in the documented way.
  *
  * WHAT THIS SUITE IS FOR. Every bug this project has hit in the trigger path
  * was silent: the firmware kept running and the defect showed up only as odd
@@ -50,7 +56,7 @@ Fixture* fx = nullptr;
 
 // The scheme actually shipped in src/main.cpp: TRIG_CONFIRM_US 200,
 // TRIG_RELEASE_MS 3, both reading the raw pin.
-RawFireRelease shipped() { return RawFireRelease{3, 200}; }
+TriggerInputScheme shipped() { return trig(200, 3); }
 
 Trace pressTrace(uint64_t bounce_us = 2000, uint64_t hold_us = 150000,
                  int bounces = 6) {
@@ -201,7 +207,7 @@ void test_rejected_edge_rearm_latches_on_short_contact(void) {
 void test_confirm_window_sets_trigger_latency(void) {
     fx->trace = pressTrace(2000, 150000, 6); // 2ms / 6 = 333us segments
     for (uint32_t confirm : {0u, 100u, 200u}) {
-        Result r = run(fx->trace, RawFireRelease{3, confirm}, 10);
+        Result r = run(fx->trace, trig(confirm, 3), 10);
         double expected_ms = confirm / 1000.0;
         char msg[96];
         snprintf(msg, sizeof msg, "confirm %u us should cost %.3f ms",
@@ -217,7 +223,7 @@ void test_confirm_window_sets_trigger_latency(void) {
 // and it is the constraint that makes 1ms cost 3ms instead of 1ms.
 void test_confirm_window_wider_than_a_bounce_segment_costs_the_whole_bounce(void) {
     fx->trace = pressTrace(2000, 150000, 6);
-    Result r = run(fx->trace, RawFireRelease{3, 500}, 10);
+    Result r = run(fx->trace, trig(500, 3), 10);
     TEST_ASSERT_DOUBLE_WITHIN_MESSAGE(0.1, 2.5, r.meanLat_ms(),
         "a 500us window against 333us segments costs bounce+confirm = 2.5ms, "
         "not 0.5ms - keep TRIG_CONFIRM_US under one segment");
@@ -226,7 +232,7 @@ void test_confirm_window_wider_than_a_bounce_segment_costs_the_whole_bounce(void
 // Glitches shorter than the window are rejected; longer ones are not. The
 // window is a threshold, not a general noise filter.
 void test_confirm_window_is_a_threshold(void) {
-    RawFireRelease s{3, 200};
+    auto s = trig(200, 3);
     fx->trace = makeGlitch("short", 100);
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, run(fx->trace, s, 10).fires,
         "100us glitch is under the 200us window and must be rejected");
@@ -246,13 +252,47 @@ void test_release_window_sets_the_retrigger_floor(void) {
 
     Trace tooFast = makeRoll("", 12, floor_us - 5000, bounce, hold, 6);
     TEST_ASSERT_TRUE_MESSAGE(
-        run(tooFast, RawFireRelease{release, 200}, 50, floor_us).missed > 0,
+        run(tooFast, trig(200, release), 50, floor_us).missed > 0,
         "below hold+bounce+release, hits must be dropped");
 
     Trace ok = makeRoll("", 12, floor_us + 5000, bounce, hold, 6);
     TEST_ASSERT_EQUAL_INT_MESSAGE(
-        0, run(ok, RawFireRelease{release, 200}, 50, floor_us + 5000).missed,
+        0, run(ok, trig(200, release), 50, floor_us + 5000).missed,
         "above the floor, every hit must play");
+}
+
+// These two drive TriggerInput directly rather than through the sim's runner,
+// because they pin contracts that other parts of the firmware depend on and
+// that nothing but a comment was guarding.
+
+// LATENCY_PROBE subtracts trigInput.pendingSince after a strike to report true
+// button-to-sound rather than start()-to-sound. That only works because
+// update() deliberately does NOT clear it on fire.
+void test_pendingSince_survives_the_strike_for_the_latency_probe(void) {
+    TriggerInput t;
+    t.confirm_us = 200; t.release_ms = 3;
+    const uint32_t edge = 1000000;
+    TEST_ASSERT_FALSE(t.update(edge, true));        // first LOW: starts the window
+    TEST_ASSERT_TRUE(t.update(edge + 200, true));   // window satisfied: fires
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(edge, t.pendingSince,
+        "pendingSince must still hold the first-LOW instant after firing - "
+        "LATENCY_PROBE subtracts it and would otherwise report nonsense");
+}
+
+// Step 3 of the bench procedure in docs/circuit-rc.md sets the confirm window
+// to 0. Even then the firmware needs the pin LOW on two consecutive polls, so
+// it keeps one poll period of glitch rejection for free.
+//
+// This is the exact behaviour the old hand-written model got wrong - it fired
+// on the very first LOW - and it was wrong on the one configuration the bench
+// procedure uses. Pinned here now that both sides share one definition.
+void test_zero_confirm_window_still_requires_two_polls(void) {
+    TriggerInput t;
+    t.confirm_us = 0; t.release_ms = 3;
+    TEST_ASSERT_FALSE_MESSAGE(t.update(1000, true),
+        "a zero window must not fire on the very first LOW poll");
+    TEST_ASSERT_TRUE_MESSAGE(t.update(1010, true),
+        "it must fire on the next poll that still reads LOW");
 }
 
 // =========================================================================
@@ -352,7 +392,7 @@ void test_rc_defeats_the_shipped_confirm_window(void) {
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, run(filtered, shipped(), 50).fires,
         "with the RC, the same glitch gets through - stretched past the window");
     TEST_ASSERT_EQUAL_INT_MESSAGE(
-        0, run(filtered, RawFireRelease{3, 1500}, 50).fires,
+        0, run(filtered, trig(1500, 3), 50).fires,
         "a window longer than the stretch rejects it again, at 1.5ms of latency");
 }
 
@@ -383,6 +423,8 @@ int main(int, char**) {
     RUN_TEST(test_confirm_window_wider_than_a_bounce_segment_costs_the_whole_bounce);
     RUN_TEST(test_confirm_window_is_a_threshold);
     RUN_TEST(test_release_window_sets_the_retrigger_floor);
+    RUN_TEST(test_pendingSince_survives_the_strike_for_the_latency_probe);
+    RUN_TEST(test_zero_confirm_window_still_requires_two_polls);
 
     // 5. wraparound
     RUN_TEST(test_behaviour_is_identical_across_micros_wraparound);

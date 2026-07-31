@@ -90,59 +90,15 @@ static_assert(DMA_BUFFERS * DMA_BUFFER_LENGTH <= 512,
 #endif
 
 // --- Trigger conditioning, shared by all four buttons ---
-// GPIO4 and the three pads run this same state machine. The sharing is
-// deliberate: the retrigger bug this replaced survived because the trigger
-// path had drifted into two divergent debounce implementations, and only one
-// of them ever got scrutinised.
+// The state machine and the rationale for both its windows live in
+// trigger_input.h, which is compiled into this firmware AND into the host test
+// suite. Keeping one definition is what makes test/test_trigger able to make
+// claims about this binary rather than about a transcription of it.
 //
-// Both guards read the RAW pin. Nothing here derives a decision from a
-// filtered or debounced state - the lag of such a state couples correctness to
-// the filter's constant, which is precisely how the old bug worked. Measured
-// in sim/trigger_sim.cpp.
-//
-//  TRIG_CONFIRM_US: the LOW must persist this long before firing. Rejects
-//    glitches shorter than the window, and is the ONLY defense against phantom
-//    hits - the RC filter in docs/circuit-rc.md does not cover them. Keep it
-//    under one contact-bounce segment (~300us): above that it cannot be
-//    satisfied until the whole bounce settles and the latency becomes the
-//    bounce duration instead. 200us costs 0.2ms; 1ms costs 3ms.
-//  TRIG_RELEASE_MS: rearm only after the raw pin reads HIGH continuously.
-//    Guards re-fire during contact bounce. With the RC filter fitted, 1 is
-//    enough, and lowering it raises the maximum sustainable roll rate.
-#define TRIG_CONFIRM_US 200
-#define TRIG_RELEASE_MS 3
-
-struct TriggerInput {
-  bool     armed        = true;
-  bool     pending      = false;
-  // pendingSince is deliberately NOT cleared when a strike fires: it then holds
-  // the instant the raw pin first went LOW, which is what LATENCY_PROBE needs
-  // to measure true button-to-sound rather than just start()-to-sound.
-  uint32_t pendingSince = 0;      // micros() stamps; every comparison below is
-  bool     highValid    = false;  // an unsigned difference, so the ~71 minute
-  uint32_t highSince    = 0;      // micros() wraparound is a non-event
-
-  // True on the single loop() iteration where a strike is confirmed.
-  bool update(uint32_t now_us, bool low) {
-    if (armed) {
-      if (!low) {
-        pending = false;            // bounced back HIGH: a glitch, not a strike
-      } else if (!pending) {
-        pending = true; pendingSince = now_us;
-      } else if ((uint32_t)(now_us - pendingSince) >= TRIG_CONFIRM_US) {
-        armed = false; pending = false; highValid = false;
-        return true;
-      }
-    } else if (low) {
-      highValid = false;            // still held or bouncing: restart the window
-    } else if (!highValid) {
-      highValid = true; highSince = now_us;
-    } else if ((uint32_t)(now_us - highSince) >= TRIG_RELEASE_MS * 1000UL) {
-      armed = true;
-    }
-    return false;
-  }
-};
+// To change TRIG_CONFIRM_US or TRIG_RELEASE_MS, define them before this
+// include - the header guards its defaults with #ifndef, same as the DMA
+// override above.
+#include "trigger_input.h"
 
 #if USE_SD_SAMPLER
 // --- Which WAV file to load (0 = first file found on the card) ---

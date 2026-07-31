@@ -23,13 +23,12 @@ pio test -e native            # host unit suite, no board
 
 Trigger logic is verified on the host; everything else — audio, SD, PSRAM residency, the DMA ring depth — is verified only by flashing. Neither substitutes for the other: a green build and a green suite say nothing about whether PSRAM initialised.
 
-Three pieces, one model:
-
-- [sim/trigger_model.h](sim/trigger_model.h) — header-only: the trigger state machines transcribed from `main.cpp`, the pin-trace generator, the RC filter model, the scoring runner. **Timestamps are `uint32_t` on purpose**, matching `micros()`, so unsigned-difference arithmetic wraps in simulation exactly as on the board; `run()` takes a time base so the wrap boundary itself is testable.
+- [src/trigger_input.h](src/trigger_input.h) — `TriggerInput`, the state machine every button runs. **Compiled into the firmware AND into the tests.** It lived in `main.cpp` with a hand-written copy in the simulator until the two drifted: the copy grew a `confirm_us == 0` fast path the firmware never had, on the exact configuration the bench procedure in [docs/circuit-rc.md](docs/circuit-rc.md) uses. Tests were green while measuring something the board would not do. Keep it shared — divergence should be impossible by construction, not by vigilance.
+- [sim/trigger_model.h](sim/trigger_model.h) — header-only scaffolding: pin-trace generator, RC filter model, scoring runner, plus models of the two **rejected** designs. Those are copies on purpose; they no longer exist in the firmware and exist only to keep failing in the documented way. **Timestamps are `uint32_t`**, matching `micros()`, so unsigned-difference arithmetic wraps in simulation exactly as on the board; `run()` takes a time base so the wrap boundary itself is testable.
 - [sim/trigger_sim.cpp](sim/trigger_sim.cpp) — the sweep/report CLI (`--sweep=all`).
 - [test/test_trigger](test/test_trigger) — the Unity suite.
 
-Both consumers share the one model deliberately. Copying scheme logic into the tests would mean the tests stop testing what the tool reports.
+The two windows are instance members with defaults from `TRIG_CONFIRM_US` / `TRIG_RELEASE_MS` (both `#ifndef`-guarded) rather than macros read inline, so sweeps and tests can vary them per instance. Costs 8 bytes per button.
 
 Always pass `-e native`. A bare `pio test` also targets the ESP32 environments, which means trying to upload.
 

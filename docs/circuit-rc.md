@@ -223,9 +223,17 @@ verificando que nada piora:
    há garantia de que os quatro RC ficaram bem contactados, e defesa em
    profundidade custa 0,2 ms.
 
-Os quatro passos acima estão validados na simulação (`--sweep=rc`): com o RC,
-mesmo `confirm 0 / release 0` dá **1 disparo por batida**, enquanto o pino cru
-nessa configuração dá 7.
+Os quatro passos acima estão validados contra **o código real do firmware**
+(`pio test -e native` e `--sweep=rc`, que hoje instanciam o mesmo
+`TriggerInput` que roda na placa): com o RC, mesmo `confirm 0 / release 0` dá
+**1 disparo por batida**, enquanto o pino cru nessa configuração dá 7.
+
+Um detalhe do passo 3 que só apareceu quando o simulador passou a usar o
+código de verdade: mesmo com `TRIG_CONFIRM_US 0`, o firmware ainda exige o pino
+em nível baixo em **duas leituras consecutivas** do `loop()`. Ou seja, ele
+mantém de graça um período de polling (~20 µs) de rejeição de glitch. Não conte
+com isso como proteção — é margem, não defesa — mas saiba que "confirm 0" não
+significa "sem nenhum filtro".
 
 **Teste de ruído — com os valores restaurados.** Com tudo montado, `confirm` de
 volta em 200 µs e o áudio tocando, passe a mão perto dos fios dos botões, mexa

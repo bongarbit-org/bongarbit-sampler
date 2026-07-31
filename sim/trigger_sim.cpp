@@ -90,8 +90,8 @@ static void legacyReport(const Config& c) {
         printRow("raw-fire (as-is)",   tr, run(tr, RawFire{{c.debounce_ms}},     c.loop_us));
         printRow("raw-fire (rose fix)", tr, run(tr, RawFireRose{{c.debounce_ms}}, c.loop_us));
         printRow("raw+confirm 200us",  tr, run(tr, RawFireConfirm{{c.debounce_ms}, c.confirm_us}, c.loop_us));
-        printRow("raw+release 3ms",    tr, run(tr, RawFireRelease{c.release_ms}, c.loop_us));
-        printRow("release+confirm",    tr, run(tr, RawFireRelease{c.release_ms, c.confirm_us}, c.loop_us));
+        printRow("raw+release 3ms",    tr, run(tr, trig(0, c.release_ms), c.loop_us));
+        printRow("release+confirm",    tr, run(tr, trig(c.confirm_us, c.release_ms), c.loop_us));
     }
 }
 
@@ -201,7 +201,7 @@ static void sweepRetriggerMatrix(Config c) {
             double found = -1;
             for (uint64_t iv = hold + 1; iv <= hold + 80; iv++) {
                 Trace t = makeRoll("", c.hits, iv * 1000, bounce_us, hold * 1000, c.bounces);
-                if (run(t, RawFireRelease{rel}, c.loop_us, iv * 1000).clean(t.hits.size())) {
+                if (run(t, trig(0, rel), c.loop_us, iv * 1000).clean(t.hits.size())) {
                     found = (double)iv; break;
                 }
             }
@@ -233,7 +233,7 @@ static void sweepRetriggerMatrix(Config c) {
         printf("  %9llu |", (unsigned long long)hold);
         for (uint32_t db : {5u, 10u, 20u})
             printf("  %11d", run(t, RawFireRose{{db}}, c.loop_us, 300000).missed);
-        printf(" | %11d\n", run(t, RawFireRelease{c.release_ms}, c.loop_us, 300000).missed);
+        printf(" | %11d\n", run(t, trig(0, c.release_ms), c.loop_us, 300000).missed);
     }
     printf("\n  rose() needs hold >= PAD_DEBOUNCE_MS or the pad dies after hit 1.\n");
     printf("  release-window rearm watches the RAW pin, so it has no such floor.\n");
@@ -304,7 +304,7 @@ static void sweepGlitch(Config c) {
                    run(t, RawFire{{c.debounce_ms}}, lp).fires,
                    run(t, RawFireRose{{c.debounce_ms}}, lp).fires,
                    run(t, RawFireConfirm{{c.debounce_ms}, c.confirm_us}, lp).fires,
-                   run(t, RawFireRelease{c.release_ms}, lp).fires, mark);
+                   run(t, trig(0, c.release_ms), lp).fires, mark);
         }
     }
 
@@ -360,11 +360,11 @@ static void sweepRC(Config c) {
         Trace f = applyRC(t, p);
         struct { const char* n; double raw, rc; } rows[] = {
             {"release+confirm 200us",
-             run(t, RawFireRelease{c.release_ms, c.confirm_us}, c.loop_us).meanLat_ms(),
-             run(f, RawFireRelease{c.release_ms, c.confirm_us}, c.loop_us).meanLat_ms()},
+             run(t, trig(c.confirm_us, c.release_ms), c.loop_us).meanLat_ms(),
+             run(f, trig(c.confirm_us, c.release_ms), c.loop_us).meanLat_ms()},
             {"release only (no confirm)",
-             run(t, RawFireRelease{c.release_ms}, c.loop_us).meanLat_ms(),
-             run(f, RawFireRelease{c.release_ms}, c.loop_us).meanLat_ms()},
+             run(t, trig(0, c.release_ms), c.loop_us).meanLat_ms(),
+             run(f, trig(0, c.release_ms), c.loop_us).meanLat_ms()},
         };
         for (auto& r : rows)
             printf("  %-22s %12.3f %12.3f %10.3f\n", r.n, r.raw, r.rc, r.rc - r.raw);
@@ -387,8 +387,8 @@ static void sweepRC(Config c) {
             {"confirm 0,     release 0ms", 0, 0},
         };
         for (auto& cf : cfgs) {
-            Result a = run(t, RawFireRelease{cf.rel, cf.conf}, c.loop_us);
-            Result b = run(f, RawFireRelease{cf.rel, cf.conf}, c.loop_us);
+            Result a = run(t, trig(cf.conf, cf.rel), c.loop_us);
+            Result b = run(f, trig(cf.conf, cf.rel), c.loop_us);
             printf("  %-26s %8d/1    %8d/1  %s\n", cf.n, a.fires, b.fires,
                    b.fires == 1 ? "ok" : "FAIL");
         }
@@ -403,8 +403,8 @@ static void sweepRC(Config c) {
                        5000ULL, 10000ULL}) {
         Trace t = makeGlitch("", w);
         Trace f = applyRC(t, p);
-        int a = run(t, RawFireRelease{c.release_ms}, c.loop_us).fires;              // no confirm
-        int b = run(f, RawFireRelease{c.release_ms}, c.loop_us).fires;
+        int a = run(t, trig(0, c.release_ms), c.loop_us).fires;              // no confirm
+        int b = run(f, trig(0, c.release_ms), c.loop_us).fires;
         printf("  %10llu %14d %14d %s\n", (unsigned long long)w, a, b,
                b == 0 ? "rejected" : "PHANTOM");
     }

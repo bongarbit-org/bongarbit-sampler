@@ -26,6 +26,10 @@
 #include <string>
 #include <vector>
 
+// The firmware's own trigger state machine, compiled into this binary.
+// Not a model of it - the same translation unit the board runs.
+#include "trigger_input.h"
+
 static const int PIN_HIGH = 1; // idle, INPUT_PULLUP
 static const int PIN_LOW  = 0; // pressed
 
@@ -272,56 +276,30 @@ struct RawFireConfirm {
     }
 };
 
-// Candidate: fire on raw LOW, then rearm only after the RAW pin has been
-// continuously HIGH for release_ms.
+// --- The shipped scheme -------------------------------------------------
+// This is not a transcription. TriggerInput comes straight from
+// src/trigger_input.h, so a sweep or a test exercising it is exercising the
+// code that goes on the board. The wrapper exists only to bridge conventions:
+// the sim describes a pin as int/PIN_LOW, the firmware as bool low.
 //
-// A plain time lockout measured from the fire instant does NOT work and was
-// tried first: the release arrives `hold` milliseconds later, long after any
-// sane lockout has expired, so the first HIGH of the release bounce rearms the
-// pad and the next bounce edge fires a second sample. Confirmed in simulation
-// (2 fires per press). A stable-release requirement is unavoidable.
-//
-// So this is the same SHAPE as the rose() fix - and it latches the same way -
-// but the release window is its own constant instead of being welded to
-// PAD_DEBOUNCE_MS, so it can be sized to the switch's actual bounce (0.1-1ms)
-// rather than to a generic 10ms debounce default.
-// confirm_us > 0 additionally requires the raw LOW to persist that long before
-// firing, which is what buys glitch immunity. The two mechanisms are
-// independent: release_ms guards re-fire, confirm_us guards phantom fire.
-struct RawFireRelease {
-    uint32_t release_ms;
-    uint32_t confirm_us     = 0;
-    bool     armed          = true;
-    bool     highSinceValid = false;
-    uint32_t highSince_us   = 0;
-    bool     pending        = false;
-    uint32_t pendingSince   = 0;
-
+// It replaced a hand-written RawFireRelease that had already drifted - it grew
+// a confirm_us == 0 fast path the firmware never had, on the exact
+// configuration docs/circuit-rc.md tells you to use at the bench.
+struct TriggerInputScheme {
+    TriggerInput t;
     bool update(uint32_t now_us, int reading) {
-        bool fired = false;
-        if (armed) {
-            if (reading == PIN_LOW) {
-                if (confirm_us == 0) {
-                    fired = true; armed = false; highSinceValid = false;
-                } else if (!pending) {
-                    pending = true; pendingSince = now_us;
-                } else if (now_us - pendingSince >= confirm_us) {
-                    fired = true; armed = false;
-                    highSinceValid = false; pending = false;
-                }
-            } else {
-                pending = false; // bounced back HIGH - glitch, not a press
-            }
-        } else if (reading == PIN_LOW) {
-            highSinceValid = false; // release not clean yet, restart the window
-        } else if (!highSinceValid) {
-            highSinceValid = true; highSince_us = now_us;
-        } else if (now_us - highSince_us >= (uint32_t)release_ms * 1000) {
-            armed = true;
-        }
-        return fired;
+        return t.update(now_us, reading == PIN_LOW);
     }
 };
+
+// Named construction, because {a, b} on two same-typed windows is exactly the
+// sort of thing that gets silently transposed.
+inline TriggerInputScheme trig(uint32_t confirm_us, uint32_t release_ms) {
+    TriggerInputScheme s;
+    s.t.confirm_us = confirm_us;
+    s.t.release_ms = release_ms;
+    return s;
+}
 
 // --- Runner -------------------------------------------------------------
 
@@ -387,6 +365,6 @@ inline Row runAll(const Trace& tr, const Config& c, uint64_t latWindow) {
     row.rawFire = run(tr, RawFire{{c.debounce_ms}},                   c.loop_us, latWindow);
     row.rose    = run(tr, RawFireRose{{c.debounce_ms}},               c.loop_us, latWindow);
     row.confirm = run(tr, RawFireConfirm{{c.debounce_ms}, c.confirm_us}, c.loop_us, latWindow);
-    row.release = run(tr, RawFireRelease{c.release_ms},               c.loop_us, latWindow);
+    row.release = run(tr, trig(0, c.release_ms),                       c.loop_us, latWindow);
     return row;
 }
