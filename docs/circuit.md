@@ -142,39 +142,21 @@ GPIO7 (INPUT_PULLUP) ──● pad 3   ●── GND    (3.wav)
   batida era mais curta que o intervalo de debounce. Medido em
   `sim/trigger_sim.cpp`, que roda no PC sem placa.
 
-## Melhoria recomendada: debounce RC (ainda não montada)
-
-Com um pull-up externo e um capacitor, o quique some no hardware e o pino
-entrega bordas limpas. As constantes de tempo são assimétricas, que é
-exatamente o que um pad de percussão quer:
-
-```
-3V3 ──[R1 10k]──┬── GPIO ──[R2 220]── botão ── GND
-                │
-            [C 100nF]
-                │
-               GND
-```
-
-- **Batida (descida):** o capacitor descarrega por R2, τ ≈ 22µs —
-  praticamente instantâneo, ~1 amostra de áudio.
-- **Quique:** uma abertura de 300µs recarrega por R1 (τ = 1ms) e mal levanta
-  25% da tensão, sem cruzar o limiar. Filtrado.
-- **Soltura (subida):** τ = 1ms, ~1,4ms de atraso — irrelevante musicalmente.
-
-Ganhos: absorve glitch de EMI abaixo de ~1ms, e o pull-up de 10k no lugar do
-interno de ~45k baixa a impedância do fio em 4,5×. O maior ganho é em
-**jitter**: a descida vira monotônica e determinística, em vez de depender de
-qual microcontato do quique o polling pegou primeiro.
-
-Funciona porque as entradas GPIO do ESP32 têm Schmitt trigger — sem histerese,
-uma rampa lenta cruzando o limiar oscilaria.
-
-Não exige mudança de código: pode manter o `INPUT_PULLUP`, já que o interno
-em paralelo com o externo dá ~8,2k. O GPIO4 se beneficia igual.
-
 Cada pad toca o arquivo correspondente (`/1.wav`, `/2.wav`, `/3.wav`) na
 raiz do cartão SD, carregado inteiro na PSRAM no boot.
+
+## Melhoria recomendada: debounce RC (ainda não montada)
+
+Um pull-up externo de 10k, um resistor de 220 ohms em série e um capacitor de
+100nF por botão eliminam o quique no hardware e entregam bordas limpas ao pino.
+As constantes de tempo são assimétricas — instantâneo na batida, filtrado na
+soltura — que é exatamente a forma que um pad de percussão quer.
+
+Ganha-se sobretudo **jitter** e imunidade a ruído captado no fio, que são
+justamente as duas coisas que ajuste de software nenhum alcança.
+
+Guia de montagem completo, com lista de compras, esquema, passo a passo e como
+testar sem osciloscópio: **[circuit-rc.md](circuit-rc.md)**.
 
 ## Diagrama de blocos
 
