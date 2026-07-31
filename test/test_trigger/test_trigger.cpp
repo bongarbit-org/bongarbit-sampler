@@ -27,9 +27,10 @@
  *   3. Rejected designs   - the two schemes that were tried and abandoned,
  *                           pinned with their failure modes.
  *   4. Timing contracts   - what the two tunable constants actually buy.
- *   5. micros() wraparound- the firmware claims unsigned arithmetic survives
+ *   5. Internal contracts - structural promises other firmware code reads.
+ *   6. micros() wraparound- the firmware claims unsigned arithmetic survives
  *                           the ~71 minute wrap. This checks that claim.
- *   6. RC filter model    - what the hardware filter does, and what it does
+ *   7. RC filter model    - what the hardware filter does, and what it does
  *                           NOT do.
  */
 
@@ -201,8 +202,6 @@ void test_rejected_edge_rearm_latches_on_short_contact(void) {
 // 4. Timing contracts
 // =========================================================================
 
-// The confirm window is the trigger latency. Nothing else in the firmware
-// path adds meaningfully to it.
 // Below one contact-bounce segment, the window IS the trigger latency.
 void test_confirm_window_sets_trigger_latency(void) {
     fx->trace = pressTrace(2000, 150000, 6); // 2ms / 6 = 333us segments
@@ -261,9 +260,13 @@ void test_release_window_sets_the_retrigger_floor(void) {
         "above the floor, every hit must play");
 }
 
-// These two drive TriggerInput directly rather than through the sim's runner,
-// because they pin contracts that other parts of the firmware depend on and
-// that nothing but a comment was guarding.
+// =========================================================================
+// 5. Internal contracts other firmware code depends on
+// =========================================================================
+// These drive TriggerInput directly rather than through the sim's runner.
+// They are not about timing or about what a player observes - they pin
+// structural promises that other parts of the firmware read, and that until
+// now only a comment was guarding.
 
 // LATENCY_PROBE subtracts trigInput.pendingSince after a strike to report true
 // button-to-sound rather than start()-to-sound. That only works because
@@ -296,7 +299,7 @@ void test_zero_confirm_window_still_requires_two_polls(void) {
 }
 
 // =========================================================================
-// 5. micros() wraparound
+// 6. micros() wraparound
 // =========================================================================
 
 // TriggerInput stamps micros() and compares with unsigned differences, which
@@ -324,7 +327,7 @@ void test_behaviour_is_identical_across_micros_wraparound(void) {
 }
 
 // =========================================================================
-// 6. RC filter model
+// 7. RC filter model
 // =========================================================================
 
 void test_rc_derived_time_constants(void) {
@@ -423,13 +426,15 @@ int main(int, char**) {
     RUN_TEST(test_confirm_window_wider_than_a_bounce_segment_costs_the_whole_bounce);
     RUN_TEST(test_confirm_window_is_a_threshold);
     RUN_TEST(test_release_window_sets_the_retrigger_floor);
+
+    // 5. internal contracts
     RUN_TEST(test_pendingSince_survives_the_strike_for_the_latency_probe);
     RUN_TEST(test_zero_confirm_window_still_requires_two_polls);
 
-    // 5. wraparound
+    // 6. wraparound
     RUN_TEST(test_behaviour_is_identical_across_micros_wraparound);
 
-    // 6. RC model
+    // 7. RC model
     RUN_TEST(test_rc_derived_time_constants);
     RUN_TEST(test_rc_collapses_bounce_to_a_single_edge);
     RUN_TEST(test_rc_stops_filtering_beyond_its_time_constant);
