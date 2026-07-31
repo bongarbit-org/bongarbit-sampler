@@ -115,6 +115,9 @@ static_assert(DMA_BUFFERS * DMA_BUFFER_LENGTH <= 512,
 struct TriggerInput {
   bool     armed        = true;
   bool     pending      = false;
+  // pendingSince is deliberately NOT cleared when a strike fires: it then holds
+  // the instant the raw pin first went LOW, which is what LATENCY_PROBE needs
+  // to measure true button-to-sound rather than just start()-to-sound.
   uint32_t pendingSince = 0;      // micros() stamps; every comparison below is
   bool     highValid    = false;  // an unsigned difference, so the ~71 minute
   uint32_t highSince    = 0;      // micros() wraparound is a non-event
@@ -162,6 +165,83 @@ Wav             padWav[PAD_COUNT];
 Samp            padSamp[PAD_COUNT];
 uint8_t         padChannels[PAD_COUNT] = {1, 1, 1};
 TriggerInput    padInput[PAD_COUNT];
+#endif
+
+// --- Latency probe (see docs/circuit-rc.md, "Medir de verdade") ---
+// Measures real button-to-sound by watching the DAC's own analog output, which
+// is the only way to capture the part that happens after the CPU writes: the
+// DMA ring draining and the DAC's digital filter. A GPIO marker cannot see it.
+//
+// Needs a biased divider feeding an ADC pin - two 10k from 3V3/GND to make a
+// 1.65V midpoint, DAC output AC-coupled in through 100nF. Silence then sits
+// mid-scale and the signal swings around it without ever going negative, which
+// the ADC could not survive.
+//
+// Off by default: it puts a blocking analogRead() in loop() and is a bench
+// instrument, not a runtime feature.
+#define LATENCY_PROBE 0
+
+#if LATENCY_PROBE
+  #define PROBE_ADC_PIN     1       // GPIO1 = ADC1_CH0, free in this design
+  #define PROBE_TIMEOUT_US  50000
+  #define PROBE_BASELINE_N  256
+
+  uint16_t    probeBaseline  = 0;
+  uint16_t    probeThreshold = 0;
+  bool        probeArmed     = false;
+  uint32_t    probeEdgeUs    = 0;   // raw pin went LOW
+  uint32_t    probeFireUs    = 0;   // samp.start() was called
+  const char* probeSource    = "";
+
+  // Sample the idle DAC output to learn where silence sits and how noisy it is,
+  // so the detection threshold is derived from the actual rig rather than
+  // guessed. Must run after audioStart(), with nothing playing.
+  void probeCalibrate() {
+    uint32_t sum = 0, lo = 4095, hi = 0;
+    for (int i = 0; i < PROBE_BASELINE_N; i++) {
+      uint16_t v = analogRead(PROBE_ADC_PIN);
+      sum += v;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    probeBaseline  = sum / PROBE_BASELINE_N;
+    uint16_t noise = hi - lo;
+    probeThreshold = noise * 4 + 40;  // 4x the observed idle spread, plus floor
+    Serial.printf("PROBE: baseline=%u noise=%u threshold=%u (GPIO%d)\n",
+                  probeBaseline, noise, probeThreshold, PROBE_ADC_PIN);
+    if (noise > 200)
+      Serial.println("PROBE: idle noise is high - check the divider and grounding");
+  }
+
+  void probeArm(const char* source, uint32_t edgeUs, uint32_t fireUs) {
+    if (probeArmed) return;         // a measurement is already in flight
+    probeArmed  = true;
+    probeSource = source;
+    probeEdgeUs = edgeUs;
+    probeFireUs = fireUs;
+  }
+
+  // Poll the DAC output until it leaves the silence band. Reports both halves
+  // of the chain: what the firmware spent deciding, and what the audio path
+  // added after start() - the second is the number the DMA ring controls.
+  void probePoll() {
+    if (!probeArmed) return;
+    uint32_t now = micros();
+    int      v   = analogRead(PROBE_ADC_PIN);
+    if (abs(v - (int)probeBaseline) > (int)probeThreshold) {
+      Serial.printf("PROBE %s: total %lu us  (trigger %lu + audio path %lu)\n",
+                    probeSource,
+                    (unsigned long)(now - probeEdgeUs),
+                    (unsigned long)(probeFireUs - probeEdgeUs),
+                    (unsigned long)(now - probeFireUs));
+      probeArmed = false;
+    } else if ((uint32_t)(now - probeFireUs) > PROBE_TIMEOUT_US) {
+      Serial.printf("PROBE %s: no audio within %d us - sample silent at its "
+                    "start, or the divider is not connected\n",
+                    probeSource, PROBE_TIMEOUT_US);
+      probeArmed = false;
+    }
+  }
 #endif
 
 // --- Trigger button (see docs/circuit.md) ---
@@ -241,6 +321,9 @@ void setup() {
   DBG("DAC: PCM5102A has no status feedback pin - the 'M16 is running' line "
       "above is the only software confirmation; audible output still "
       "depends on correct wiring (docs/circuit.md)\n");
+#if LATENCY_PROBE
+  probeCalibrate(); // after audioStart(), while nothing is playing
+#endif
   Serial.println("Ready. Press the trigger button to play the sample.");
 }
 
@@ -254,6 +337,9 @@ void loop() {
   if (trigInput.update(now_us, digitalRead(TRIGGER_PIN) == LOW)) {
     TRIGDBG("Trigger: GPIO%d\n", TRIGGER_PIN);
     samp.start();
+#if LATENCY_PROBE
+    probeArm("trigger", trigInput.pendingSince, micros());
+#endif
   }
 
 #if USE_SD_SAMPLER
@@ -261,8 +347,15 @@ void loop() {
     if (padInput[i].update(now_us, digitalRead(padPins[i]) == LOW)) {
       TRIGDBG("Pad %u: triggered\n", i + 1);
       padSamp[i].start();
+#if LATENCY_PROBE
+      probeArm(padFiles[i], padInput[i].pendingSince, micros());
+#endif
     }
   }
+#endif
+
+#if LATENCY_PROBE
+  probePoll();
 #endif
 }
 

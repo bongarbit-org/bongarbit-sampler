@@ -104,6 +104,8 @@ Para os 4 botões:
 | 4 | Resistor 10 kΩ (¼ W) | marrom · preto · laranja · dourado |
 | 4 | Resistor 220 Ω (¼ W) | vermelho · vermelho · marrom · dourado |
 | 4 | Capacitor cerâmico 100 nF | serigrafia `104` |
+| 2 | Resistor 10 kΩ | *para o rig de medição* |
+| 1 | Capacitor cerâmico 100 nF | *para o rig de medição* |
 
 Valores não são críticos: 4,7 k–10 k no pull-up e 100 Ω–1 k no série funcionam
 igual. O que importa é a **relação** entre os dois, explicada abaixo.
@@ -215,6 +217,80 @@ glitch vem da janela de confirmação no software, não do RC (ver "O que ele N�
 faz"). Com `confirm 0` você estaria testando o pad justamente sem a proteção
 que cobre esse cenário.
 
+## Medir de verdade — o rig de latência
+
+Todo o orçamento acima é **aritmética**: τ do RC, group delay do datasheet,
+profundidade de ring. Nunca ninguém viu o número. Este rig mede a cadeia
+inteira, de dedo a som, com dois resistores e um capacitor.
+
+A parte que importa é que ele observa a **saída analógica do DAC**. Um marcador
+em GPIO não serve: o dreno do DMA e o filtro do DAC acontecem *depois* de a CPU
+escrever, e são justamente os dois termos que estamos tentando calibrar.
+
+### O circuito
+
+```
+        3V3
+         │
+       [10k]
+         │
+DAC L ──┤├──┬─── GPIO1  (ADC1_CH0)
+       100nF │
+           [10k]
+             │
+            GND
+```
+
+Os dois resistores criam um ponto médio em **1,65 V**, e o capacitor acopla o
+áudio em cima dele. Isso é obrigatório, não estético: a saída do DAC é
+centrada em 0 V e oscila para os dois lados; sem o deslocamento, o semiciclo
+negativo entraria no ADC, que só aceita 0–3,3 V. Com a polarização, o silêncio
+fica no meio da escala e o sinal balança em volta sem nunca ir a negativo.
+
+Qualquer um dos canais serve — samples mono saem nos dois. Some 2× 10 kΩ e
+1× 100 nF à lista de compras.
+
+O GPIO1 é ADC1_CH0 e está livre neste projeto (os ocupados são 4–7 botões,
+10–13 SD, 16–18 I2S).
+
+### Usar
+
+Em [../src/main.cpp](../src/main.cpp), ligue:
+
+```c
+#define LATENCY_PROBE 1
+```
+
+No boot, ele amostra a saída em silêncio para aprender onde fica a linha de
+base e quanto ela oscila, e deriva o limiar de detecção **do rig real** em vez
+de um chute:
+
+```
+PROBE: baseline=2047 noise=12 threshold=88 (GPIO1)
+```
+
+Se o ruído vier acima de ~200 ele avisa — geralmente é o divisor mal contactado
+ou terra ruim.
+
+Cada batida imprime:
+
+```
+PROBE /1.wav: total 6180 us  (trigger 210 + audio path 5970)
+```
+
+- **trigger** — o que o firmware gastou decidindo (a janela `TRIG_CONFIRM_US`
+  mais o período de polling).
+- **audio path** — o que veio depois do `start()`: ring de DMA e filtro do DAC.
+  **É este número que a escada abaixo move.**
+
+Duas limitações honestas: o `analogRead()` do Arduino leva ~50–100 µs, então a
+resolução é dessa ordem — o que é 1–2% de uma medida de ~6 ms, aceitável. E o
+sample precisa começar com transiente; se o `.wav` abrir com silêncio, o probe
+mede o silêncio junto e acusa timeout.
+
+Deixe `LATENCY_PROBE 0` fora da bancada: ele põe um `analogRead()` bloqueante
+dentro do `loop()`.
+
 ## Calibrar o ring de DMA — a parte que precisa da placa
 
 Esta é a única alteração do pacote que **não** pôde ser verificada sem
@@ -232,17 +308,47 @@ cache miss de PSRAM dentro do `audioUpdate()`, que é sub-microssegundo. Por iss
 dá para ser bem mais raso que os 46 ms da M16, que foram dimensionados para
 sobreviver a um apagamento de setor de flash.
 
-**Procedimento:** toque um rolo rápido com **os quatro pads soando ao mesmo
+**Teste de estresse:** toque um rolo rápido com **os quatro pads soando ao mesmo
 tempo**. É o caminho mais pesado do `audioUpdate()` — quatro vozes somadas — e é
-onde um estouro aparece primeiro.
+onde um estouro aparece primeiro. Um pad sozinho não prova nada.
 
-| Sintoma | Ação |
-|---|---|
-| Clique, estalo ou chiado no áudio | Suba: `DMA_BUFFER_LENGTH 128` (11,6 ms), depois `256` (23 ms) |
-| Limpo, e quer menos ainda | Desça: `32` (2,9 ms), depois `16` (1,5 ms) |
+| Config | Ring | |
+|---|---|---|
+| 4 × 256 | 23 ms | recuo seguro |
+| 4 × 128 | 11,6 ms | |
+| **4 × 64** | **5,8 ms** | onde está hoje |
+| 4 × 32 | 2,9 ms | |
+| 4 × 16 | 1,5 ms | ISR a cada 363 µs |
+| 2 × 16 | 0,73 ms | piso — abaixo de 2 descritores não há double buffering |
 
 Um `static_assert` no `main.cpp` falha o build se o `#define` for parar depois
 do `#include` — sem ele, os 46 ms voltariam sem nenhum outro sintoma.
+
+Vale saber por que dá para ser tão raso aqui: o ring existe para cobrir a maior
+pausa que o produtor de áudio possa levar, e neste firmware **as pausas grandes
+não existem** — nada escreve em flash em runtime, não há WiFi, o SD não é tocado
+depois do boot. Sobra o cache miss de PSRAM dentro do `audioUpdate()`, que custa
+1–2 µs; com ring de 1,5 ms seriam necessárias centenas de faltas consecutivas de
+pior caso para furar. A task de áudio, além disso, já roda em prioridade máxima
+fixada no core 0 (a M16 faz isso), com o `loop()` no core 1 — não há folga a
+extrair de escalonamento.
+
+## O procedimento, em ordem
+
+Sábado, com a placa:
+
+1. **Validar os 5,8 ms.** Grave como está e faça o teste de estresse acima.
+   Se estourar, suba um degrau e repita até ficar limpo. Este passo vem antes de
+   tudo: se 5,8 ms não se sustentar, o resto da conversa muda de assunto.
+2. **Montar o rig** e ligar `LATENCY_PROBE 1`. Anote o número real. É a primeira
+   vez que este projeto vai ter um.
+3. **Descer a escada com o número na mão** — um degrau, mede, ouve, decide.
+   Pare quando o áudio sujar ou quando o ganho deixar de valer o risco.
+
+Uma nota de proporção: abaixo de ~2 ms você entra na faixa em que o curso
+mecânico do botão e a variação do seu próprio tempo tocando passam a dominar.
+Chegar aos 5,8 ms validados já põe o instrumento na faixa imperceptível para
+percussão; o resto é rendimento decrescente.
 
 ## Ajustes finos de firmware, depois da bancada
 
