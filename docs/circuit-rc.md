@@ -52,23 +52,43 @@ firmware, e funciona. O que o RC acrescenta:
   BCK de I2S chaveando a ~2,8 MHz. Trocar por 10 kΩ em paralelo (≈8,2 kΩ
   efetivos) reduz a captação em ~5×.
 
-### O que ele NÃO faz
+### O que ele NÃO faz — e onde ele PIORA
 
-**O RC não substitui o `TRIG_CONFIRM_US` como defesa contra batida fantasma.**
-Simulando um glitch como fechamento momentâneo de contato, o filtro só rejeita
-pulsos abaixo de ~20 µs; de 50 µs para cima o pino cruza o limiar e o disparo
-acontece. A constante de descida é rápida **de propósito** — é o que mantém a
-batida instantânea — e ela é rápida para qualquer coisa que aterre o pino, não
-só para o seu dedo.
+Contra glitch de **contato** (fecho momentâneo: sujeira, vibração, filete de
+metal), o RC não só deixa de ajudar — ele **atrapalha**. E isso é o oposto da
+intuição, então vale o número medido:
 
-Ruído de fato irradiado, acoplado capacitivamente, é bem mais atenuado que
-isso, porque chega por impedância altíssima e o capacitor o curto-circuita.
-Mas esse caso **não está simulado aqui**, então não trate como número: trate o
-RC como redutor da *probabilidade* de captação, e a janela de confirmação no
-software como a rejeição de fato.
+| Glitch no botão | LOW que chega ao pino | fator |
+|---|---|---|
+| 50 µs | **1048 µs** | 21× |
+| 200 µs | 1281 µs | 6,4× |
+| 1000 µs | 2081 µs | 2,1× |
 
-Resumo: o RC resolve quique e jitter (medido); o software resolve glitch
-(medido). São defesas complementares, não redundantes.
+Todo glitch sai **~1081 µs mais longo**, sempre a mesma parcela. A razão é a
+assimetria que faz o circuito ser bom para batida: a descarga é rápida (21 µs)
+e a **recarga é lenta** (818 µs). O pino desce quase instantaneamente e depois
+leva mais de um milissegundo para voltar a cruzar V_IH.
+
+Consequência prática, e ela importa: **com o RC montado, os 200 µs de
+`TRIG_CONFIRM_US` deixam de rejeitar glitch de contato.** Sem o RC, um blip de
+50 µs dá 50 µs de nível baixo e a janela o descarta. Com o RC, o mesmo blip dá
+1048 µs e passa. Para rejeitar depois do RC seria preciso uma janela maior que
+o alongamento — ~1,5 ms, contra os 0,2 ms de hoje.
+
+A contrapartida, e é ela que justifica montar o filtro assim mesmo: ruído
+**irradiado**, acoplado capacitivamente, chega por impedância altíssima, e aí o
+capacitor o curto-circuita antes de o pino chegar perto do limiar. Nesse caso o
+RC previne o glitch inteiramente, em vez de alongá-lo. Esse caso **não está
+simulado** — não trate como número.
+
+Ou seja, o efeito do RC sobre batida fantasma é **bidirecional**, e qual dos
+dois domina depende de que tipo de ruído a sua montagem realmente sofre. É
+justamente isso que o teste de ruído na bancada resolve, e é por isso que ele
+não é opcional.
+
+Resumo: o RC resolve quique e jitter (medido). Contra glitch ele ajuda no caso
+irradiado (não medido) e atrapalha no caso de contato (medido). A janela de
+confirmação no software é a única rejeição medida que temos.
 
 ## Alteração 2: `FLT` do PCM5102A em 3V3
 

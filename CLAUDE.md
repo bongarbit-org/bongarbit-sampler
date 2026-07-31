@@ -17,7 +17,23 @@ pio run -e sd_test -t upload # flash the standalone SD diagnostic instead
 
 PlatformIO lives in a project-local venv (gitignored), so the commands above are `.venv/bin/pio ...` unless you activate it. Create it with `python3 -m venv .venv && .venv/bin/pip install platformio` — Debian's system Python is PEP 668 externally-managed, so a bare `pip install` is refused.
 
-There is no test suite. Trigger logic is verified on the host by [sim/trigger_sim.cpp](sim/trigger_sim.cpp) (`g++ -O2 -std=c++17`, no board); everything else — audio, SD, PSRAM residency — is verified only by flashing. Both are real verification and neither substitutes for the other: a green build says nothing about whether PSRAM actually initialised.
+```bash
+pio test -e native            # host unit suite, no board
+```
+
+Trigger logic is verified on the host; everything else — audio, SD, PSRAM residency, the DMA ring depth — is verified only by flashing. Neither substitutes for the other: a green build and a green suite say nothing about whether PSRAM initialised.
+
+Three pieces, one model:
+
+- [sim/trigger_model.h](sim/trigger_model.h) — header-only: the trigger state machines transcribed from `main.cpp`, the pin-trace generator, the RC filter model, the scoring runner. **Timestamps are `uint32_t` on purpose**, matching `micros()`, so unsigned-difference arithmetic wraps in simulation exactly as on the board; `run()` takes a time base so the wrap boundary itself is testable.
+- [sim/trigger_sim.cpp](sim/trigger_sim.cpp) — the sweep/report CLI (`--sweep=all`).
+- [test/test_trigger](test/test_trigger) — the Unity suite.
+
+Both consumers share the one model deliberately. Copying scheme logic into the tests would mean the tests stop testing what the tool reports.
+
+Always pass `-e native`. A bare `pio test` also targets the ESP32 environments, which means trying to upload.
+
+The suite is organised by *reason*, not code shape: each rejected design has a test named after how it failed (`test_rejected_level_rearm_machine_guns`, `test_rejected_edge_rearm_latches_on_short_contact`), so reintroducing one fails a test that explains itself. `test_harness_reproduces_historical_machine_gun` pins the model to the originally measured 112/3 fire counts — if it fails, the model drifted and no other assertion in the file means anything.
 
 `platform` is pinned to an exact **pioarduino** release, not to `espressif32`. M16 needs Arduino core 3.x (ESP-IDF 5) for `driver/i2s_std.h`, and the official PlatformIO platform does not ship it — as of 7.0.1 it still pins core 2.0.17, and the build fails outright. pioarduino is the community fork that tracks core 3.x. Do not "modernise" this back to `platform = espressif32`.
 
