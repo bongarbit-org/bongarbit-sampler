@@ -15,9 +15,11 @@ pio device monitor           # serial log, 115200 baud
 pio run -e sd_test -t upload # flash the standalone SD diagnostic instead
 ```
 
-There is no test suite and no host-side simulation — the only verification is building and running on hardware. `pio` is not installed in this checkout's environment, so a build cannot be run here without installing PlatformIO first; don't claim a change compiles unless a build actually ran.
+PlatformIO lives in a project-local venv (gitignored), so the commands above are `.venv/bin/pio ...` unless you activate it. Create it with `python3 -m venv .venv && .venv/bin/pip install platformio` — Debian's system Python is PEP 668 externally-managed, so a bare `pip install` is refused.
 
-`platform = espressif32` must resolve to **Arduino core 3.x (ESP-IDF 5)**. M16 uses the new `i2s_std` driver; older cores fail to compile.
+There is no test suite. Trigger logic is verified on the host by [sim/trigger_sim.cpp](sim/trigger_sim.cpp) (`g++ -O2 -std=c++17`, no board); everything else — audio, SD, PSRAM residency — is verified only by flashing. Both are real verification and neither substitutes for the other: a green build says nothing about whether PSRAM actually initialised.
+
+`platform` is pinned to an exact **pioarduino** release, not to `espressif32`. M16 needs Arduino core 3.x (ESP-IDF 5) for `driver/i2s_std.h`, and the official PlatformIO platform does not ship it — as of 7.0.1 it still pins core 2.0.17, and the build fails outright. pioarduino is the community fork that tracks core 3.x. Do not "modernise" this back to `platform = espressif32`.
 
 The two environments share `src/` and are separated by `build_src_filter` because each has its own `setup()`/`loop()` pair. Adding a third sketch file means adding a filter exclusion to **every** env, not just the new one.
 
@@ -68,7 +70,9 @@ Full wiring rationale, including the PCM5102A control pins (`SCK`→GND for inte
 
 The trap: **GPIO 33–37 are consumed by the Octal PSRAM** on R8 modules. Generic ESP32-S3 pinout guides list them as free and suggest them for VSPI; using them here bricks PSRAM. SD therefore sits on HSPI (10–13). Also unusable: 0/3/45/46 (strapping), 26–32 (flash), 43/44 (UART0), 19/20 (native USB).
 
-`platformio.ini` overrides the stock board definition because it assumes 8MB flash / no PSRAM: `flash_size = 16MB`, `default_16MB.csv`, `memory_type = qio_opi`, `psram_type = opi`, plus `-DBOARD_HAS_PSRAM`. Dropping any of these silently loses PSRAM and the samples stop fitting. `-DARDUINO_USB_CDC_ON_BOOT=1` is required because the board has no UART bridge chip — without it the serial monitor is simply empty.
+`board = esp32-s3-devkitc1-n16r8`, **not** the generic `esp32-s3-devkitc-1` — that one is the N8 (8MB flash, no PSRAM). The N16R8 definition carries `default_16MB.csv`, `memory_type = qio_opi`, `psram_type = opi`, `-DBOARD_HAS_PSRAM` and the correct 16MB size limits together. This used to be a stack of `board_build`/`board_upload` overrides on top of the generic board; they mostly worked, but left `maximum_size` at the N8's 8MB while writing a partition table running to 0xff0000, so firmware size was checked against the wrong ceiling.
+
+Two `build_flags` are load-bearing, both about serial. `-DARDUINO_USB_CDC_ON_BOOT=1` because the board has no UART bridge chip — without it Serial goes to UART0 (GPIO 43/44), wired to nothing, and the monitor stays empty while the firmware runs fine. `-DARDUINO_USB_MODE=1` because the generic board definition provided it via `extra_flags` and the n16r8 one does not; drop it and serial goes quiet the same way.
 
 ## Conventions
 
