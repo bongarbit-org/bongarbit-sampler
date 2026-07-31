@@ -1,11 +1,36 @@
-# Circuito alternativo — botões com debounce RC
+# Circuito alternativo — versão de baixa latência
 
-Guia de montagem para a versão dos 4 botões com filtro RC no hardware, em vez
-de deixar o quique de contato inteiro por conta do software.
+Guia de montagem do experimento de latência mínima. São **duas** alterações de
+hardware em relação ao [circuit.md](circuit.md):
 
-O resto do circuito — DAC PCM5102A, leitor microSD, alimentação, terra comum —
-**não muda em nada**. Só a fiação dos botões. Para tudo o mais, siga
-[circuit.md](circuit.md).
+1. **Filtro RC nos 4 botões** — tira o quique de contato do software.
+2. **Pino `FLT` do PCM5102A em 3V3** — troca o filtro digital do DAC pelo de
+   baixa latência. Um jumper.
+
+Leitor microSD, alimentação e terra comum não mudam.
+
+## O orçamento de latência
+
+O firmware desta branch já fez a parte de software. A conta completa,
+batida-até-som:
+
+| Termo | antes | agora | como |
+|---|---|---|---|
+| Debounce do GPIO4 | 25 ms | **0,2 ms** | software — mesmo esquema dos pads |
+| Confirmação dos pads | 0,2 ms | 0,2 ms | inalterado (é a defesa contra fantasma) |
+| Polling do `loop()` | ~50 µs + risco de travar no Serial | ~20 µs | software — log de disparo desligado por padrão |
+| **Ring DMA do I2S** | **46,4 ms** | **5,8 ms** | software — `DMA_BUFFER_LENGTH` |
+| Filtro digital do DAC | 0,50 ms | **0,08 ms** | **hardware — `FLT` em 3V3** |
+| Filtro RC | — | +0,05 ms | **hardware — custo, não ganho** |
+| **Total (pads)** | **~47 ms** | **~6,1 ms** | |
+| **Total (GPIO4)** | **~72 ms** | **~6,1 ms** | |
+
+O termo que dominava tudo era o ring de DMA da M16, e ninguém tinha olhado
+para ele. Os 0,2 ms de debounce que a gente vinha discutindo eram 0,4% do
+problema.
+
+⚠️ **O ring de 5,8 ms ainda não foi validado em hardware.** Se der estouro
+(clique, chiado), o caminho é subir — ver "Calibrar o ring" no fim.
 
 ## Por que fazer isso
 
@@ -29,7 +54,7 @@ firmware, e funciona. O que o RC acrescenta:
 
 ### O que ele NÃO faz
 
-**O RC não substitui o `PAD_CONFIRM_US` como defesa contra batida fantasma.**
+**O RC não substitui o `TRIG_CONFIRM_US` como defesa contra batida fantasma.**
 Simulando um glitch como fechamento momentâneo de contato, o filtro só rejeita
 pulsos abaixo de ~20 µs; de 50 µs para cima o pino cruza o limiar e o disparo
 acontece. A constante de descida é rápida **de propósito** — é o que mantém a
@@ -45,6 +70,31 @@ software como a rejeição de fato.
 Resumo: o RC resolve quique e jitter (medido); o software resolve glitch
 (medido). São defesas complementares, não redundantes.
 
+## Alteração 2: `FLT` do PCM5102A em 3V3
+
+O PCM5102A tem dois filtros digitais de interpolação, selecionados pelo pino
+`FLT` (pino 11):
+
+| `FLT` | Filtro | Group delay |
+|---|---|---|
+| GND (padrão, e o que o `circuit.md` mandava) | FIR linear-phase | **22 amostras** = 0,50 ms a 44,1 kHz |
+| **3V3** | IIR minimum-phase | **~80 µs** |
+
+São ~420 µs de graça, num orçamento que agora é de ~6 ms — 7% do total, por um
+jumper.
+
+E para percussão o filtro de baixa latência é provavelmente **melhor em
+qualidade também**, não só mais rápido. Filtro linear-phase produz *pre-ringing*:
+oscilação que aparece **antes** do transiente, porque a resposta ao impulso é
+simétrica. Num ataque de bumbo isso borra a batida. Minimum-phase concentra a
+energia depois do transiente, o que é como a percussão acústica se comporta. A
+troca em áudio geral é discutível; em transiente percussivo, não muito.
+
+**Cheque a sua placa antes.** Muitos breakouts genéricos ("GY-PCM5102") já
+amarram `FLT` a GND internamente e nem expõem o pino. Se estiver exposto, ligue
+a 3V3. Se estiver amarrado, essa melhoria não está disponível sem retrabalho na
+placa — e aí você fica com os 0,50 ms, o que não inviabiliza nada.
+
 ## Lista de compras
 
 Para os 4 botões:
@@ -57,6 +107,8 @@ Para os 4 botões:
 
 Valores não são críticos: 4,7 k–10 k no pull-up e 100 Ω–1 k no série funcionam
 igual. O que importa é a **relação** entre os dois, explicada abaixo.
+
+Mais um fio para o `FLT` → 3V3.
 
 ## O circuito, por botão
 
@@ -133,15 +185,15 @@ botão**. Os quatro juntos não chegam a 1,3 mA.
   ~300 mV, confira o valor do R2 — muito alto e o pino não chega ao nível
   baixo lógico.
 
-**Com o firmware, o teste bom.** O `DEBUG_SAMPLER` já imprime `Pad N:
+**Com o firmware, o teste bom.** Com `DEBUG_TRIGGERS 1`, o firmware imprime `Pad N:
 triggered` a cada disparo. Como o RC torna as proteções de software
 redundantes, dá para provar que ele funciona **enfraquecendo o software** e
 verificando que nada piora:
 
-1. Com o firmware como está (`PAD_CONFIRM_US 200`, `PAD_RELEASE_MS 3`), bata
+1. Com o firmware como está (`TRIG_CONFIRM_US 200`, `TRIG_RELEASE_MS 3`), bata
    nos pads e confirme uma linha por batida.
 2. Temporariamente, em [../src/main.cpp](../src/main.cpp), baixe para
-   `PAD_CONFIRM_US 0` e `PAD_RELEASE_MS 1`.
+   `TRIG_CONFIRM_US 0` e `TRIG_RELEASE_MS 1`.
 3. Bata de novo, inclusive rápido e de leve. **Se continuar uma linha por
    batida, o RC está fazendo o trabalho.** Sem o RC, esses valores deixariam
    passar quique e ruído.
@@ -163,20 +215,46 @@ glitch vem da janela de confirmação no software, não do RC (ver "O que ele N�
 faz"). Com `confirm 0` você estaria testando o pad justamente sem a proteção
 que cobre esse cenário.
 
-## Depois que estiver funcionando
+## Calibrar o ring de DMA — a parte que precisa da placa
 
-Com bordas limpas garantidas, dá para simplificar o firmware — mas só depois de
-confirmar na bancada, não antes:
+Esta é a única alteração do pacote que **não** pôde ser verificada sem
+hardware, e é a de maior impacto. O `main.cpp` define, antes do
+`#include "M16.h"`:
 
-- O **GPIO4** ainda usa `DEBOUNCE_MS 25`, o esquema antigo de "esperar
-  estabilizar". São 25 ms de latência que o RC torna desnecessários. Migrar o
-  GPIO4 para o mesmo esquema dos pads é o maior ganho de latência que sobrou no
-  projeto.
-- `PAD_RELEASE_MS` pode cair de 3 para 1 ms — o RC já garante a soltura limpa,
+```c
+#define DMA_BUFFERS       4
+#define DMA_BUFFER_LENGTH 64      // 256 frames = 5,8 ms
+```
+
+O ring precisa absorver a maior pausa que o produtor de áudio possa levar. Neste
+firmware não existe escrita em flash, nem WiFi, nem SD depois do boot — sobra o
+cache miss de PSRAM dentro do `audioUpdate()`, que é sub-microssegundo. Por isso
+dá para ser bem mais raso que os 46 ms da M16, que foram dimensionados para
+sobreviver a um apagamento de setor de flash.
+
+**Procedimento:** toque um rolo rápido com **os quatro pads soando ao mesmo
+tempo**. É o caminho mais pesado do `audioUpdate()` — quatro vozes somadas — e é
+onde um estouro aparece primeiro.
+
+| Sintoma | Ação |
+|---|---|
+| Clique, estalo ou chiado no áudio | Suba: `DMA_BUFFER_LENGTH 128` (11,6 ms), depois `256` (23 ms) |
+| Limpo, e quer menos ainda | Desça: `32` (2,9 ms), depois `16` (1,5 ms) |
+
+Um `static_assert` no `main.cpp` falha o build se o `#define` for parar depois
+do `#include` — sem ele, os 46 ms voltariam sem nenhum outro sintoma.
+
+## Ajustes finos de firmware, depois da bancada
+
+- `TRIG_RELEASE_MS` pode cair de 3 para 1 ms — o RC já garante a soltura limpa,
   e isso aumenta a taxa máxima de rolo.
-- **`PAD_CONFIRM_US` não deve cair.** Ele custa 0,2 ms e é a única defesa
+- **`TRIG_CONFIRM_US` não deve cair.** Ele custa 0,2 ms e é a única defesa
   medida contra batida fantasma; o RC não cobre esse caso. Baixe só durante o
   passo 3 do teste, e restaure.
+- `DEBUG_TRIGGERS` já vem em `0`. Ligar coloca um `Serial.printf` dentro do laço
+  de polling, e USB CDC bloqueia quando o host não drena o buffer — ou seja, um
+  travamento sem limite superior no caminho do trigger. Use para diagnosticar
+  entrada, nunca com o áudio sendo avaliado.
 
 Antes de mexer nos números, vale rodar o simulador para ver o que cada valor
 faz — ele roda no PC, sem placa:

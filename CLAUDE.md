@@ -34,8 +34,9 @@ The two environments share `src/` and are separated by `build_src_filter` becaus
 
 **Two deliberately different debounce strategies**, and this asymmetry is intentional, not an oversight:
 
-- Trigger GPIO4 ([src/main.cpp:174](src/main.cpp:174)): classic wait-for-stable debounce, `DEBOUNCE_MS 25`. Costs 25 ms of trigger-to-sound latency.
-- Pads GPIO5/6/7 ([src/main.cpp:191](src/main.cpp:191)): fires on the **raw** pin read after `PAD_CONFIRM_US` (200 µs, rejects EMI glitches), then disarms until the raw pin reads HIGH continuously for `PAD_RELEASE_MS` (3 ms). No debounce library is involved in the trigger path.
+All four buttons run one shared `TriggerInput` state machine. Fires on the **raw** pin read after `TRIG_CONFIRM_US` (200 µs, the only defense against phantom hits), then disarms until the raw pin reads HIGH continuously for `TRIG_RELEASE_MS` (3 ms). No debounce library is involved.
+
+The sharing is the point. GPIO4 used to have its own wait-for-stable debounce at 25 ms; having two divergent implementations in one trigger path is what let the pad retrigger bug survive review. Do not reintroduce a second one.
 
   Both guards read the pin directly, and that is load-bearing. They were originally derived from Bounce2's debounced state, which lags the pin by its interval — rearming on the debounced *level* re-fired ~112 times per strike, and rearming on the debounced *edge* (`rose()`) latched the pad off permanently whenever contact time was under `bounce + interval`. Any rearm condition read from a filtered state couples correctness to the filter's constant. Do not reintroduce one. [sim/trigger_sim.cpp](sim/trigger_sim.cpp) measures all of this on the host.
 
@@ -43,7 +44,9 @@ The two environments share `src/` and are separated by `build_src_filter` becaus
 
 The pad scheme is the reference pattern for any new trigger input. GPIO4 is the legacy path.
 
-`loop()` also prints the raw GPIO4 state every 500 ms via `DBG` — a `Serial.printf` in the trigger polling loop. It is a debugging aid; set `DEBUG_SAMPLER 0` ([src/main.cpp:42](src/main.cpp:42)) before judging real-world latency, and don't add unconditional Serial output to `loop()`.
+**The I2S DMA ring is the latency budget.** M16 feeds it one sample at a time and blocks when full, so ring depth ≈ trigger-to-sound time. Its default of 4 × 512 frames is 46 ms, sized to survive a host flash-sector erase — a stall that cannot happen here, since samples are PSRAM-resident, SD is untouched after boot, and nothing writes flash at runtime. [src/main.cpp](src/main.cpp) overrides it to 4 × 64 = 5.8 ms **before** `#include "M16.h"`, guarded by a `static_assert`: M16 uses `#ifndef`, so moving the defines below the include silently restores 46 ms with no other symptom. This value is not hardware-validated — tune it against a four-voice roll, the heaviest `audioUpdate()` path.
+
+Serial logging is split: `DEBUG_BOOT` (setup only, free, leave on) and `DEBUG_TRIGGERS` (one line per strike, from inside the polling loop, **off by default**). USB CDC blocks when the host is not draining, which puts an unbounded stall in the trigger path — never leave it on while judging latency, and don't add unconditional Serial output to `loop()`.
 
 ## Compile-time sample source
 

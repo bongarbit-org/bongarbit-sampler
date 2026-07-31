@@ -82,7 +82,7 @@ por um único DAC (sem distribuir um master clock externo):
 | `SCK` (system clock) | **GND** | Habilita o modo de clock automático interno do PCM5102A — gera o master clock a partir do próprio BCK, dispensando um oscilador de 11.2896MHz externo. Confirmado no fórum: *"Just connect SCK to GND at each DAC board... I have always used PCM5102A's in that configuration without any problems."* |
 | `FMT` (format select) | **GND** | Seleciona formato I2S padrão (necessário para bater com a saída da M16, que usa I2S Philips) |
 | `XSMT` (soft mute) | **3V3** | Precisa ficar em nível alto para desmutar a saída. A maioria dos breakouts genéricos já traz um pull-up para isso, mas confira com um multímetro — se ficar flutuante ou em GND, a saída de áudio fica permanentemente mudo mesmo com o I2S funcionando |
-| `FLT` (filter select) | GND | Filtro normal (latência normal); é o default na maioria das placas |
+| `FLT` (filter select) | GND, ou **3V3** | GND = FIR linear-phase, group delay de 22 amostras (0,50ms a 44,1kHz) — é o default da maioria das placas. **3V3 = IIR minimum-phase, ~80µs.** Para percussão o de baixa latência é melhor duas vezes: 420µs a menos e sem *pre-ringing* antes do transiente. Ver [circuit-rc.md](circuit-rc.md) |
 | `DEMP` (de-emphasis) | GND | Desabilita de-ênfase de 44.1kHz (não necessário para reprodução de samples) |
 
 Esses quatro últimos pinos (`FMT`, `XSMT`, `FLT`, `DEMP`) não aparecem no
@@ -123,16 +123,20 @@ GPIO6 (INPUT_PULLUP) ──● pad 2   ●── GND    (2.wav)
 GPIO7 (INPUT_PULLUP) ──● pad 3   ●── GND    (3.wav)
 ```
 
-- **Trigger (GPIO4):** debounce "espera estabilizar antes de disparar"
-  (25ms) — dispara só depois da leitura ficar estável.
-- **Pads (GPIO5/6/7):** sem biblioteca de debounce — as duas proteções leem
-  o pino **bruto**, e são independentes uma da outra:
-  - `PAD_CONFIRM_US` (200µs): o nível baixo precisa persistir esse tempo
+Os **quatro** botões — trigger e pads — rodam o mesmo condicionamento
+(`TriggerInput` no `main.cpp`). Sem biblioteca de debounce: as duas proteções
+leem o pino **bruto** e são independentes uma da outra.
+
+O GPIO4 já teve um esquema próprio de "espera estabilizar" com 25ms, que era a
+maior parcela de latência daquele botão. Ter duas implementações divergentes no
+mesmo caminho de trigger foi o que escondeu o bug de retrigger dos pads por
+tanto tempo — agora existe uma só.
+  - `TRIG_CONFIRM_US` (200µs): o nível baixo precisa persistir esse tempo
     antes de disparar. Rejeita glitch de EMI mais curto que a janela, ao
     custo de 0,2ms de latência. Precisa ficar bem abaixo de um segmento de
     quique (~300µs); com 1ms a janela só se satisfaz depois que o quique
     inteiro assenta, e a latência vira 3ms.
-  - `PAD_RELEASE_MS` (3ms): depois de disparar, o pad só rearma quando o
+  - `TRIG_RELEASE_MS` (3ms): depois de disparar, o pad só rearma quando o
     pino ficar em alto continuamente por esse tempo. É o que evita o
     disparo repetido ("efeito metralhadora") enquanto o botão é segurado.
 
@@ -154,7 +158,7 @@ soltura — que é exatamente a forma que um pad de percussão quer.
 
 Ganha-se **quique** e **jitter**: simulado, uma prensada que produz 14
 transições no pino passa a produzir 2, ao custo de 50 µs de latência. Não
-substitui o `PAD_CONFIRM_US` contra batida fantasma — as defesas são
+substitui o `TRIG_CONFIRM_US` contra batida fantasma — as defesas são
 complementares, e o motivo está no guia.
 
 Guia de montagem completo, com lista de compras, esquema, passo a passo e como

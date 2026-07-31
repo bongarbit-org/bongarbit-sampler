@@ -23,8 +23,37 @@
  *    not available in this mode.
  */
 
+// --- Audio output latency (MUST be set before including M16.h) ---
+// M16 feeds the I2S DMA ring one sample at a time and blocks when it is full,
+// so the ring depth IS the trigger-to-sound latency, essentially all of it.
+// The library default is 4 x 512 = 2048 frames = 46ms at 44.1kHz, sized to
+// survive a flash sector erase on the host (~30-40ms).
+//
+// That worst case does not exist in this firmware: samples are resident in
+// PSRAM, the SD card is never touched after boot, there is no WiFi, and
+// nothing writes to flash at runtime. The only producer stall left is a PSRAM
+// cache miss inside audioUpdate(), which is sub-microsecond. M16's own comment
+// names this exact case as the reason the values are overridable
+// ("percussive/Beat Machine style").
+//
+// 4 x 64 = 256 frames = 5.8ms. Tuning ladder, to be walked on hardware:
+//   clicks/dropouts  -> raise DMA_BUFFER_LENGTH (128 = 11.6ms, 256 = 23ms)
+//   clean, want less -> 4 x 32 = 2.9ms, then 4 x 16 = 1.5ms
+// Test on a fast roll with all four voices sounding at once - that is the
+// heaviest audioUpdate() path and the first place an underrun will show.
+#define DMA_BUFFERS       4
+#define DMA_BUFFER_LENGTH 64
+
 #include "M16.h"
 #include "Samp.h"
+
+// The override above only works while it sits BEFORE the include - M16 guards
+// its own values with #ifndef. Moving it below, or dropping it, silently
+// restores the 2048-frame default and puts 46ms back into the trigger path
+// with no other symptom. Fail the build instead.
+static_assert(DMA_BUFFERS * DMA_BUFFER_LENGTH <= 512,
+              "I2S ring deeper than 512 frames (~12ms) - the DMA override has "
+              "drifted below #include \"M16.h\" and M16's default came back");
 
 // --- Sample source: 1 = load one .wav from SD into RAM/PSRAM at boot,
 //                    0 = play from embedded flash array ---
@@ -36,14 +65,81 @@
   #include "kick_normalizado_data.h"
 #endif
 
-// --- Debug logging over Serial (SD/DAC init, button presses, playback) ---
-// Set to 0 once things are working to quiet the serial output.
-#define DEBUG_SAMPLER 1
-#if DEBUG_SAMPLER
+// --- Debug logging over Serial ---
+// Split in two, because the two kinds of logging have very different costs.
+//
+// DEBUG_BOOT covers setup() only - SD mount, WAV load, DAC start. It runs
+// before any audio and costs nothing at runtime. It is also what tells you
+// PSRAM and the card actually came up, so leave it on.
+//
+// DEBUG_TRIGGERS prints one line per strike, from inside the polling loop.
+// Serial over USB CDC blocks when the host is not draining the buffer, which
+// puts an unbounded stall directly in the trigger path. Off by default: turn
+// it on to diagnose an input problem, never while judging latency.
+#define DEBUG_BOOT     1
+#define DEBUG_TRIGGERS 0
+#if DEBUG_BOOT
   #define DBG(...) Serial.printf(__VA_ARGS__)
 #else
   #define DBG(...)
 #endif
+#if DEBUG_TRIGGERS
+  #define TRIGDBG(...) Serial.printf(__VA_ARGS__)
+#else
+  #define TRIGDBG(...)
+#endif
+
+// --- Trigger conditioning, shared by all four buttons ---
+// GPIO4 and the three pads run this same state machine. The sharing is
+// deliberate: the retrigger bug this replaced survived because the trigger
+// path had drifted into two divergent debounce implementations, and only one
+// of them ever got scrutinised.
+//
+// Both guards read the RAW pin. Nothing here derives a decision from a
+// filtered or debounced state - the lag of such a state couples correctness to
+// the filter's constant, which is precisely how the old bug worked. Measured
+// in sim/trigger_sim.cpp.
+//
+//  TRIG_CONFIRM_US: the LOW must persist this long before firing. Rejects
+//    glitches shorter than the window, and is the ONLY defense against phantom
+//    hits - the RC filter in docs/circuit-rc.md does not cover them. Keep it
+//    under one contact-bounce segment (~300us): above that it cannot be
+//    satisfied until the whole bounce settles and the latency becomes the
+//    bounce duration instead. 200us costs 0.2ms; 1ms costs 3ms.
+//  TRIG_RELEASE_MS: rearm only after the raw pin reads HIGH continuously.
+//    Guards re-fire during contact bounce. With the RC filter fitted, 1 is
+//    enough, and lowering it raises the maximum sustainable roll rate.
+#define TRIG_CONFIRM_US 200
+#define TRIG_RELEASE_MS 3
+
+struct TriggerInput {
+  bool     armed        = true;
+  bool     pending      = false;
+  uint32_t pendingSince = 0;      // micros() stamps; every comparison below is
+  bool     highValid    = false;  // an unsigned difference, so the ~71 minute
+  uint32_t highSince    = 0;      // micros() wraparound is a non-event
+
+  // True on the single loop() iteration where a strike is confirmed.
+  bool update(uint32_t now_us, bool low) {
+    if (armed) {
+      if (!low) {
+        pending = false;            // bounced back HIGH: a glitch, not a strike
+      } else if (!pending) {
+        pending = true; pendingSince = now_us;
+      } else if ((uint32_t)(now_us - pendingSince) >= TRIG_CONFIRM_US) {
+        armed = false; pending = false; highValid = false;
+        return true;
+      }
+    } else if (low) {
+      highValid = false;            // still held or bouncing: restart the window
+    } else if (!highValid) {
+      highValid = true; highSince = now_us;
+    } else if ((uint32_t)(now_us - highSince) >= TRIG_RELEASE_MS * 1000UL) {
+      armed = true;
+    }
+    return false;
+  }
+};
 
 #if USE_SD_SAMPLER
 // --- Which WAV file to load (0 = first file found on the card) ---
@@ -59,54 +155,22 @@ SdFs sd;
 Wav  wav;
 
 // --- Extra pads: 1.wav / 2.wav / 3.wav on the SD card root ---
-// Each pad fires on the raw pin reading - no debounce filter in the trigger
-// path, so a strike costs PAD_CONFIRM_US of latency and nothing else.
-//
-// Two guards, both watching the RAW pin, deliberately independent of each
-// other so neither can silently disable the other:
-//  - PAD_CONFIRM_US: the LOW must persist this long before firing. Rejects EMI
-//    pulses shorter than the window. Keep it well under one contact-bounce
-//    segment (~300us on a typical tactile switch): if the window exceeds a
-//    segment it cannot be satisfied until the whole bounce settles, and the
-//    trigger latency becomes the bounce duration instead. Measured: 200us
-//    costs 0.2ms, 1ms costs 3ms.
-//  - PAD_RELEASE_MS: after firing, the pad rearms only once the pin has read
-//    HIGH continuously for this long. This is what stops re-fire during
-//    contact bounce.
-//
-// Both were previously derived from Bounce2's debounced state, and that was
-// the bug: the debounced state lags the pin by its interval, so a rearm
-// condition read from it fires immediately after the strike (level) or never
-// fires at all when the contact time is shorter than the interval (edge). Any
-// scheme built on that state couples correctness to the debounce constant.
-// These read the pin directly, so the failure modes stay bounded and
-// independent. All of this is measured in sim/trigger_sim.cpp.
 #define PAD_COUNT 3
-#define PAD_CONFIRM_US 200
-#define PAD_RELEASE_MS 3
 const uint8_t   padPins[PAD_COUNT]  = {5, 6, 7};
 const char*     padFiles[PAD_COUNT] = {"/1.wav", "/2.wav", "/3.wav"};
 Wav             padWav[PAD_COUNT];
 Samp            padSamp[PAD_COUNT];
 uint8_t         padChannels[PAD_COUNT] = {1, 1, 1};
-bool            padArmed[PAD_COUNT]    = {true, true, true};
-// micros() timestamps; all comparisons are unsigned differences so the ~71min
-// micros() wraparound is a non-event.
-bool            padPending[PAD_COUNT]     = {false, false, false};
-uint32_t        padPendingSince[PAD_COUNT] = {0, 0, 0};
-bool            padHighValid[PAD_COUNT]   = {false, false, false};
-uint32_t        padHighSince[PAD_COUNT]   = {0, 0, 0};
+TriggerInput    padInput[PAD_COUNT];
 #endif
 
 // --- Trigger button (see docs/circuit.md) ---
 // One leg on TRIGGER_PIN (internal pull-up, pressed = LOW), the other leg
-// on a real GND pin on the dev kit.
+// on a real GND pin on the dev kit. Runs the same TriggerInput as the pads -
+// it used to have its own wait-for-stable debounce costing 25ms, which was
+// most of this button's trigger-to-sound time.
 #define TRIGGER_PIN 4
-#define DEBOUNCE_MS 25
-
-bool     lastRawReading    = HIGH; // raw pin reading, only used to reset the debounce timer on change
-bool     buttonState       = HIGH; // debounced, stable state
-uint32_t lastDebounceTime  = 0;
+TriggerInput trigInput;
 
 Samp    samp;
 uint8_t sampleChannels = 1; // set at boot from whichever source is used below
@@ -181,56 +245,22 @@ void setup() {
 }
 
 void loop() {
-  bool reading = digitalRead(TRIGGER_PIN);
+  // One timestamp for the whole sweep, so all four inputs are conditioned
+  // against the same instant. Nothing blocking belongs in this function: with
+  // DEBUG_TRIGGERS off it is four digitalRead()s and some arithmetic, which
+  // keeps the poll period in the low tens of microseconds.
+  uint32_t now_us = micros();
 
-  // Raw, unfiltered pin state, printed regardless of debounce/edge logic -
-  // lets you watch GPIO4 live while physically pressing the button.
-  static uint32_t lastRawPrint = 0;
-  if (millis() - lastRawPrint > 500) {
-    lastRawPrint = millis();
-    DBG("Button raw: GPIO%d = %s\n", TRIGGER_PIN, reading == LOW ? "LOW" : "HIGH");
+  if (trigInput.update(now_us, digitalRead(TRIGGER_PIN) == LOW)) {
+    TRIGDBG("Trigger: GPIO%d\n", TRIGGER_PIN);
+    samp.start();
   }
-
-  if (reading != lastRawReading) {
-    lastDebounceTime = millis();
-  }
-  if ((millis() - lastDebounceTime) > DEBOUNCE_MS) {
-    if (reading != buttonState) {
-      buttonState = reading;
-      if (buttonState == LOW) {
-        DBG("Button: pressed (GPIO%d LOW)\n", TRIGGER_PIN);
-        samp.start();
-      } else {
-        DBG("Button: released\n");
-      }
-    }
-  }
-  lastRawReading = reading;
 
 #if USE_SD_SAMPLER
-  uint32_t padNow = micros();
   for (uint8_t i = 0; i < PAD_COUNT; i++) {
-    bool low = (digitalRead(padPins[i]) == LOW); // raw pin, never a filtered state
-    if (padArmed[i]) {
-      if (!low) {
-        padPending[i] = false; // bounced back HIGH before confirming: a glitch, not a strike
-      } else if (!padPending[i]) {
-        padPending[i] = true;
-        padPendingSince[i] = padNow;
-      } else if ((uint32_t)(padNow - padPendingSince[i]) >= PAD_CONFIRM_US) {
-        DBG("Pad %u: triggered\n", i + 1);
-        padSamp[i].start();
-        padArmed[i]    = false; // locked out until a clean release, below
-        padPending[i]  = false;
-        padHighValid[i] = false;
-      }
-    } else if (low) {
-      padHighValid[i] = false; // still held (or bouncing): restart the release window
-    } else if (!padHighValid[i]) {
-      padHighValid[i] = true;
-      padHighSince[i] = padNow;
-    } else if ((uint32_t)(padNow - padHighSince[i]) >= PAD_RELEASE_MS * 1000UL) {
-      padArmed[i] = true; // pin has read HIGH continuously - safe to fire again
+    if (padInput[i].update(now_us, digitalRead(padPins[i]) == LOW)) {
+      TRIGDBG("Pad %u: triggered\n", i + 1);
+      padSamp[i].start();
     }
   }
 #endif
