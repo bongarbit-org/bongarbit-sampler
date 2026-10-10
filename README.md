@@ -13,6 +13,10 @@ PCM5102A usando a biblioteca [M16](https://github.com/algomusic/M16).
 Plano completo de fiação, com justificativa de cada pino e as ressalvas
 específicas do N16R8: [docs/circuit.md](docs/circuit.md).
 
+O que esta branch mudou em relação ao estado inicial do projeto, e a
+justificativa de cada alteração:
+[docs/mudancas-vs-main.md](docs/mudancas-vs-main.md).
+
 ## Firmware
 
 `src/main.cpp` toca o sample através da engine `Samp` da M16. A fonte do
