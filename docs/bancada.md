@@ -458,9 +458,9 @@ Preencha durante o dia. O objetivo do projeto inteiro é ter estes números.
 
 | Medida | Previsto | Medido |
 |---|---|---|
-| PSRAM livre no boot | ~8,3 MB | |
-| Arquivo que o GPIO4 pegou | — | |
-| `DMA_BUFFER_LENGTH` estável | 64 (5,8 ms) | |
+| PSRAM livre no boot | ~8,3 MB | **8.386.096 B** (13/08/2026) |
+| Arquivo que o GPIO4 pegou | — | **`/crime-1.wav`** (índice 0 de 21) |
+| `DMA_BUFFER_LENGTH` estável | 64 (5,8 ms) | **64 (5,8 ms)** — validado com 4 vozes |
 | `noise` do probe | < 50 | |
 | Latência **total** | ~6,1 ms | |
 | Latência **audio path** | ~5,9 ms | |
@@ -468,6 +468,175 @@ Preencha durante o dia. O objetivo do projeto inteiro é ter estes números.
 | Tensão no pino, apertado (com RC) | ~70 mV | |
 | Quique real do switch | 0,1–1 ms | |
 | Fantasma no teste de ruído? | não | |
+
+---
+
+## 8. Primeira sessão de bancada — 13/08/2026
+
+Montagem base, sem RC e sem o rig de latência. Três botões apenas (GPIO5/6/7);
+o GPIO4 ficou sem botão e foi disparado com jumper na mão quando preciso.
+
+### Fases que fecharam
+
+| Fase | Resultado |
+|---|---|
+| A — bancada fria | passou |
+| B — primeiro boot | passou: PSRAM 8.386.096 B, SD OK, os quatro `.wav` carregados |
+| C — primeiro som | passou, **depois de dois defeitos de hardware** (abaixo) |
+| D — contagem de disparos | passou: 17 batidas → 17 linhas `Pad N: triggered` |
+| E em diante | não chegaram a rodar |
+
+O bug de retrigger foi confirmado por contraste na mesma sessão: gravando o
+firmware da branch `main` (sem a correção), as mesmas batidas produziram **196
+linhas**. É a primeira medição em hardware do efeito metralhadora — até então
+só existia no `sim/trigger_sim.cpp`.
+
+### Dois defeitos encontrados, ambos invisíveis no log
+
+**1. `XSMT` flutuando.** Este módulo GY-PCM5102A **não** traz os pinos de
+controle resolvidos de fábrica: eles ficam em jumpers de solda de três ilhas
+(`H1L`…`H4L`) no verso, **todos abertos**. O `XSMT` tem pull-down interno, então
+aberto ele lê 0 V = *soft mute* ativo, e a saída fica muda com I2S, dados,
+alimentação e clock todos perfeitos. Medido: 0 V. Corrigido com fio da ilha
+`XSMT` ao trilho de 3V3 → 3,29 V.
+
+Os outros três (`FLT`, `DEMP`, `FMT`) flutuando caem em `L` pelo mesmo
+pull-down, e `L` é justamente o valor desejado nos três — por isso só o `XSMT`
+dá problema.
+
+**2. Contatos intermitentes na protoboard.** Com `XSMT` corrigido, ainda não
+saía som: `BCK` e `LCK` liam ~1,6 V **no DAC**, e `DIN` ficava em 0,00 V durante
+o sample inteiro. O que parecia um pino morto era **mau contato**, e ele
+enganou o diagnóstico por horas.
+
+A revelação veio de dois comportamentos: raspar o jumper do `DIN` fazia o áudio
+voltar, e mexer no fio do `XSMT` alternava entre som limpo, som horrível e
+silêncio — que é o que se espera de uma entrada digital passeando em torno do
+limiar lógico. Depois, sem tocar em nada, tudo voltou sozinho.
+
+**Consequência: toda conclusão baseada numa medida pontual daquele período é
+inválida.** Especificamente, ficaram sem resposta:
+
+- Se o GPIO18 tem defeito. A hipótese nasceu de `DIN` em 0 V e "funcionou no
+  GPIO8"; as duas observações mediram o contato, não o pino.
+- Se o canal RX é o culpado. Tentou-se um A/B/A (`din = -1` contra `din = 21`,
+  tudo o mais igual) e ele **não é executável nesta montagem**: depois de cada
+  gravação a placa sobe muda, e só passa a tocar após vários resets e mexidas
+  nos jumpers. Cada tentativa mede quanto o fio foi sacudido, não a
+  configuração. Fica pendente até a montagem estar soldada.
+
+  A linha `seti2sPins(16, 17, 18, -1)` ficou no `main.cpp` **por mérito
+  próprio**, não porque tenha sido provada: este projeto não tem entrada I2S
+  (o `circuit.md` lista o GPIO21 como não conectado), e o default da M16 aloca
+  um canal RX, roda `i2s_channel_init_std_mode()` uma segunda vez com a mesma
+  `std_cfg` e habilita um periférico que ninguém lê. Custo de desligar: zero.
+
+### Fase E — a escada do ring de DMA, medida
+
+Primeira medição em hardware do valor que o projeto inteiro existe para
+calibrar. Escada percorrida com as quatro vozes soando ao mesmo tempo.
+
+| `DMA_BUFFER_LENGTH` | Ring | Resultado |
+|---|---|---|
+| 256 | 23 ms | limpo |
+| 128 | 11,6 ms | limpo |
+| **64** | **5,8 ms** | **limpo com 4 vozes simultâneas** |
+
+**Os 5,8 ms se sustentam.** O valor que estava no `main.cpp` desde o início,
+escolhido na mesa e nunca verificado, está validado no caminho mais pesado do
+`audioUpdate()`. O orçamento de ~6,1 ms do `circuit-rc.md` fica de pé, e não
+foi preciso descer mais — abaixo de ~2 ms o curso mecânico do botão passa a
+dominar.
+
+#### Os dois confundidores que fizeram 5,8 ms parecer falhar
+
+Antes de chegar nesse resultado, a escada foi percorrida **para cima**, com a
+conclusão oposta — "5,8 ms crepita, inclusive com uma voz só; o estável é 23 ms".
+Estava errado, e as duas causas soam exatamente como estouro de DMA:
+
+1. **Samples de 8 bits.** Todos os arquivos do cartão eram 8-bit/11025 Hz. Um
+   piso de quantização de ~48 dB crepita nas caudas de decaimento, e a banda
+   cortada em 5,5 kHz reforça a impressão de defeito.
+2. **Clipping.** O `audioUpdate()` soma as vozes em `int32_t` e clipa uma vez no
+   fim. Com samples normalizados a 89% do fundo de escala, **duas** vozes
+   simultâneas somam 178% e clipam forte — o que soa como estalo. Este
+   confundidor foi *introduzido durante a própria bancada*, ao copiar quatro
+   cópias de um kick normalizado para o cartão como "sample limpo".
+
+A escada só passou a medir o ring com arquivos **16-bit/44,1 kHz atenuados a
+~22% cada**, onde quatro vozes somam 89% e nenhuma combinação clipa.
+
+**Lição de método:** julgar estouro de DMA de ouvido exige um sample que não
+tenha nem piso de ruído próprio nem risco de clipping. Qualquer um dos dois
+inverte a conclusão. A fase F (probe no ADC) existe justamente para não
+depender disso.
+
+#### Achado de projeto: o firmware não tem headroom por voz
+
+Não é detalhe de bancada. O `audioUpdate()` soma as vozes e clipa, sem
+atenuação por voz nem limitador. Um kit de samples normalizado — que é o normal
+— **clipa com dois pads simultâneos, por construção**. As opções são escalar as
+vozes (dividir por `PAD_COUNT + 1`, custando volume), pôr um limitador, ou
+documentar que o material precisa vir com headroom. Hoje é acidente, não
+decisão.
+
+### Comportamento não explicado
+
+Após cada gravação, a placa sobe **muda**, e passa a funcionar só depois de
+vários resets acompanhados de mexidas nos jumpers. Atribuído a contato
+intermitente, mas a componente "vários resets" não está explicada por isso
+sozinha — vale reavaliar depois da solda, e se persistir, investigar se o
+PCM5102A precisa de `XSMT` estável já no power-on.
+
+Causa provável dos contatos: os jumpers `H*L` do verso do DAC exigem solda (ver
+defeito 1), o header do módulo tem indício de solda fria, e as pernas dos
+jumpers fatigaram com as trocas. **Nada disso se resolve sem ferro de solda**, e
+qualquer medição feita antes disso mede o estado dos contatos naquele instante.
+
+**3. `DEBUG_TRIGGERS` custa segundos, não microssegundos.** Com ele em `1` e a
+porta serial aberta sem ninguém drenando, o intervalo entre bater no pad e ouvir
+o som ficou em **2 a 3 segundos**. O `TRIGDBG()` vem **antes** do
+`padSamp[i].start()` no laço, então o disparo só acontece quando a escrita no
+USB CDC destrava. Voltando para `0`, a latência caiu para imperceptível.
+
+É a confirmação em hardware do que o `CLAUDE.md` descreve como "unbounded stall
+in the trigger path", e o único resultado da sessão que não depende da qualidade
+dos contatos. Reforça a ordem do plano: a fase D existe para ser feita **e
+desfeita** antes da fase E.
+
+### Técnicas de diagnóstico que renderam
+
+- **Medir os pinos de I2S em DC.** Uma quadrada de 50% de duty lê ~1,6 V num
+  multímetro comum. Serve para BCK (2,8 MHz) e WS (44,1 kHz), e distingue
+  "periférico rodando" de "pino parado" sem osciloscópio.
+- **Medir no módulo, não no header do dev kit.** A serigrafia do DAC é
+  inequívoca; contar pinos no header de 22 vias produziu uma medida errada de
+  0 V que custou tempo.
+- **Usar um sinal conhecido para testar um caminho suspeito.** Encostar o fio
+  de `DIN` no GPIO16 fez o DAC converter o clock como lixo e produzir ruído
+  audível — o que provou de uma vez que fio, pino do DAC, chip, filtro de
+  saída, conector e fone estavam todos bons.
+- **Ler o multímetro através da carga.** Com o fone plugado, `LROUT`↔`AGND` em
+  resistência deu 40 Ω: a bobina do fone, provando que o jack chega às ilhas.
+- **Ligar o log do ESP-IDF.** `Serial.setDebugOutput(true)` mais
+  `-DCORE_DEBUG_LEVEL=5` no build trazem os `ESP_LOGE` do driver para o USB CDC.
+  Sem isso eles vão para a UART0 (GPIO43/44), que não está ligada em nada, e uma
+  falha de `i2s_new_channel()` fica invisível — a M16 não checa o retorno de
+  nenhuma das quatro chamadas de inicialização e imprime `M16 is running` de
+  qualquer jeito.
+
+### Armadilhas de ambiente
+
+- O usuário precisa estar no grupo `dialout` para acessar `/dev/ttyACM0`. As
+  regras de udev que a PlatformIO distribui cobrem `303a:1001`, mas esta placa
+  enumera como **`303a:4001`** rodando o firmware de aplicação, então nenhuma
+  regra casa e o nó cai no default `root:dialout` 660.
+- `pio device monitor` exige TTY (o miniterm chama `termios.tcgetattr`) e falha
+  em captura não-interativa. Um leitor pyserial simples resolve — mas precisa
+  **reconectar sozinho**, porque o USB nativo re-enumera a cada `RST` e derruba
+  o handle aberto.
+- O primeiro upload precisou de modo download manual (segurar `BOOT`, tocar
+  `RST`, soltar `BOOT`). Os seguintes gravaram direto.
 
 ---
 

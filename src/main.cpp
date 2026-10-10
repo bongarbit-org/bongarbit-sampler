@@ -36,11 +36,23 @@
 // names this exact case as the reason the values are overridable
 // ("percussive/Beat Machine style").
 //
-// 4 x 64 = 256 frames = 5.8ms. Tuning ladder, to be walked on hardware:
+// 4 x 64 = 256 frames = 5.8ms. VALIDATED on hardware 13/08/2026: clean on a
+// fast roll with all four voices sounding at once, which is the heaviest
+// audioUpdate() path. See docs/bancada.md, "Fase E".
+//
+// Getting that answer required removing two confounds that both sound exactly
+// like an underrun, and which made 5.8ms appear to fail:
+//   - 8-bit source samples. A ~48dB quantisation floor crackles on decay tails.
+//   - Clipping. audioUpdate() sums voices and clips once at the end, so two
+//     normalised samples (89% of full scale) sum to 178% and clip hard.
+// The ladder only became meaningful with 16-bit/44.1kHz samples attenuated to
+// ~22% each, where four voices sum to 89% and nothing clips.
+//
+// Tuning ladder, if it ever needs walking again:
 //   clicks/dropouts  -> raise DMA_BUFFER_LENGTH (128 = 11.6ms, 256 = 23ms)
 //   clean, want less -> 4 x 32 = 2.9ms, then 4 x 16 = 1.5ms
-// Test on a fast roll with all four voices sounding at once - that is the
-// heaviest audioUpdate() path and the first place an underrun will show.
+// Test on a fast roll with all four voices at once, on samples that neither
+// clip nor carry their own noise floor - otherwise the ladder measures those.
 #define DMA_BUFFERS       4
 #define DMA_BUFFER_LENGTH 64
 
@@ -51,6 +63,11 @@
 // its own values with #ifndef. Moving it below, or dropping it, silently
 // restores the 2048-frame default and puts 46ms back into the trigger path
 // with no other symptom. Fail the build instead.
+// The bound only has to be below M16's own default of 4 x 512 = 2048 frames;
+// anything smaller proves the override was seen. 512 leaves room for the two
+// rungs above the validated 256 without being anywhere near the default. It was
+// briefly raised to 1024 on the bench of 13/08/2026 to try 4 x 256, back when
+// clipping was being mistaken for an underrun - that reason did not survive.
 static_assert(DMA_BUFFERS * DMA_BUFFER_LENGTH <= 512,
               "I2S ring deeper than 512 frames (~12ms) - the DMA override has "
               "drifted below #include \"M16.h\" and M16's default came back");
@@ -290,8 +307,21 @@ void setup() {
       (unsigned long)(1000ULL * KICK_NORMALIZADO_FRAME_COUNT / KICK_NORMALIZADO_SAMPLE_RATE));
 #endif
 
+  // DOUT is GPIO8, not M16's default GPIO18. On this board GPIO18 does not
+  // drive: with the data wire on 18 the DAC's DIN sits at 0V through an entire
+  // sample, while BCK/WS on 16/17 read the expected ~1.6V average. Moving the
+  // same wire to 16 or 17 puts 1.6V on DIN and makes the DAC audibly convert
+  // the clock as garbage - so the wire, the DAC and the whole analog path are
+  // fine and the pin is not. Not diagnosed further; GPIO8 is free here.
+  //
+  // din = -1 also disables the I2S RX channel. M16's default set is
+  // {16, 17, 18, 21}, and any din other than -1 makes audioStart() allocate an
+  // RX channel and re-run i2s_channel_init_std_mode() with the same std_cfg.
+  // This project has no I2S input (docs/circuit.md lists GPIO21 as unused).
+  seti2sPins(16, 17, 18, -1);
+
   audioStart();
-  DBG("DAC: I2S started - BCK=GPIO16 WS=GPIO17 DOUT=GPIO18 (M16 defaults)\n");
+  DBG("DAC: I2S started - BCK=GPIO16 WS=GPIO17 DOUT=GPIO18, RX disabled\n");
   DBG("DAC: PCM5102A has no status feedback pin - the 'M16 is running' line "
       "above is the only software confirmation; audible output still "
       "depends on correct wiring (docs/circuit.md)\n");

@@ -91,6 +91,25 @@ mas são padrão do datasheet do PCM5102A — confira a serigrafia da sua
 placa, pois em muitos breakouts genéricos eles já vêm amarrados
 internamente aos valores acima e nem são expostos.
 
+> ⚠️ **"Não estão expostos" não quer dizer "estão resolvidos".** Num módulo de
+> 6 pinos (`SCK BCK DIN LCK GND VIN`), esses quatro costumam estar no **verso**,
+> como jumpers de solda de três ilhas marcados `H1L`…`H4L` — a ilha do meio é o
+> pino do chip, as das pontas são `H` (3V3) e `L` (GND). E podem vir **todos
+> abertos de fábrica**.
+>
+> Aberto, cada pino flutua e é puxado para baixo pelo pull-down interno do
+> PCM5102A. Para `FLT`, `DEMP` e `FMT` isso cai justamente nos valores que a
+> tabela acima pede, então não dá sintoma. Para o `XSMT` é o oposto: nível baixo
+> é **soft mute ativo**, e a saída fica muda com I2S rodando, dados chegando,
+> alimentação correta e nada no log — o PCM5102A não tem pino de status.
+>
+> Vire a placa antes de montar. Se houver `H*L` abertos, o `XSMT` precisa ser
+> ligado ao lado `H`, ou receber um fio da ilha até 3V3. Confirme com o
+> multímetro (placa ligada, DC): a ilha `XSMT` tem que ler ~3,3 V, não 0 V.
+>
+> Isso custou uma sessão inteira de bancada em 13/08/2026 — ver
+> [bancada.md](bancada.md), seção 8.
+
 ## Leitor de microSD (SPI)
 
 Usa o barramento HSPI dedicado (não compartilhado com flash/PSRAM):
