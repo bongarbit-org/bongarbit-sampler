@@ -55,11 +55,14 @@
 // fast roll with all four voices sounding at once, which is the heaviest
 // audioUpdate() path. See docs/bancada.md, "Fase E".
 //
-// That validation is PROVISIONAL as of 11/10/2026. It was measured against an
-// M16 checkout that no longer exists, from before the transport changed, and
-// the ring is now drained in 32-frame bursts rather than one frame per driver
-// call. The value is almost certainly still fine - bursts drain a ring faster,
-// not slower - but it has not been re-confirmed by ear on this pin.
+// That was measured against an M16 checkout that no longer exists, from
+// before the transport changed; the ring is now drained in 32-frame bursts
+// rather than one frame per driver call. Re-confirmed on the current pin on
+// 11/10/2026 by the agbau_storage voice ladder: 1 to 64 voices, the longest
+// gap between renders 1.4ms against this 5.8ms ring, and no click on a pure
+// sine at any step (docs/bancada.md section 13). That was the Agbau's engine
+// rather than this one, but the same ring, block size and transport, under a
+// far heavier load than four voices.
 //
 // Getting that answer required removing two confounds that both sound exactly
 // like an underrun, and which made 5.8ms appear to fail:

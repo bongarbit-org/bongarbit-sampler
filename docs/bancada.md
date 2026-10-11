@@ -1297,7 +1297,8 @@ seguida.
 O Agbau usa no máximo 16 vozes, e com elas sobra quatro vezes o orçamento.
 Isso também cobre a revalidação do buffer de 5,8 ms contra o pin atual da M16
 (CLAUDE.md), numa carga quatro vezes maior que a do rolo de quatro vozes
-original — **pelos números**; o ouvido está abaixo.
+original — pelos números e de ouvido: **nenhum clique no seno em nenhum
+degrau**, de 1 a 64 vozes.
 
 **Custo por voz:** ~1,05% do bloco por voz real, contra ~0,13% por fluxo cru
 na medição da opção A. A voz com envelope sai ~8× mais cara que a leitura
@@ -1309,6 +1310,66 @@ pura. Não é problema com 16 vozes, mas indica onde está o custo — o laço d
 | Item | Status |
 |---|---|
 | mmap, CRC, custo de render, escada | **medido na placa** |
-| Escada sem estalos no seno | **a confirmar de ouvido** |
-| Opção B (SD → PSRAM, com as bordas restauradas) | **não medida** — falta copiar `sd_kit/` para `/agbau/` no cartão |
+| Escada sem estalos no seno | **ouvido na placa** (COM): nenhum clique, de 1 a 64 vozes |
+| Opção B (SD → PSRAM, com as bordas restauradas) | **não medida, e dispensada**: com esses números a escolha foi a A ([agbau-migration.md](agbau-migration.md), etapa 0). Para medir mesmo assim, basta copiar `sd_kit/` para `/agbau/` no cartão |
 | Comparação amostra a amostra A × B | **não executada** (depende da B) |
+
+## 14. Primeiro som do Agbau: quatro botões — 11/10/2026
+
+Primeira rodada de `src/agbau_main.cpp` (env `agbau`, commit `55a2af7`). Ainda
+sem matriz: os quatro botões que já estavam na bancada (GPIO 4–7, ao GND), cada
+um tocando uma voz. O objetivo era testar os disparos, não onde cada som fica.
+O kit é lido da partição `samples` (opção A), gravada na rodada da seção 13 e
+não regravada desde então. **Placa no conector COM**, que também leva a serial
+(`DEBUG_TRIGGERS` e `DEBUG_ENGINE` ligados).
+
+| Botão | Voz | Preset |
+|---|---|---|
+| GPIO4 | b1 | baixo, 1 take |
+| GPIO5 | p1 | percussão, 5 takes |
+| GPIO6 | p3 | ganzá, 1 take em loop |
+| GPIO7 | p5 | percussão, 3 takes |
+
+### Pelo log (977 s, 270 toques)
+
+A linha do `DEBUG_ENGINE` sai uma vez por segundo, e os horários são do PC.
+Então o log mostra que cada voz para, mas não mede o tempo exato do release.
+
+- **Motor:** 1378–1380 blocos/s o tempo todo, `dropped 0` na fila, pior
+  render 6,4% do bloco. No máximo 3 vozes ao mesmo tempo; pico de 17 942
+  (55% da escala), sem clipar.
+- **Toques:** GPIO4 69, GPIO5 90, GPIO6 105, GPIO7 6. Todos com a soltura
+  correspondente; nenhum preso, nenhuma soltura perdida.
+- **b1** ainda aparece até 0,8 s depois de solto, compatível com o release de
+  1 s. **p3** já tinha parado na linha seguinte em todas as 27 solturas
+  isoladas.
+- **p1:** saíram as cinco takes, de 9 a 14 linhas cada. Some de 0,4 a 1,6 s
+  depois do toque porque as takes duram 1,3–1,7 s e acabam antes do decay de
+  3 s. O envelope congela onde a take acabou, como no Bela.
+- **p5:** some em até 3 s (as takes foram cortadas em A+D = 3,01 s). Em 6
+  toques saíram só p5.3.2 e p5.3.3. A chance disso por acaso é de ~9%, então não
+  indica defeito, mas a amostra é pequena.
+- **Disparos duplos:** 12 vezes, o mesmo botão disparou duas vezes dentro de uma
+  mesma leitura da serial (~0,2 s). O log não separa um toque rápido de um
+  quique do contato ao soltar. O ouvido separa, logo abaixo.
+
+### De ouvido
+
+- **Nenhum flam:** nenhum toque único soou duplo. Os 12 disparos duplos foram
+  toques rápidos de verdade.
+- **Nenhum estalo ao repetir rápido a mesma percussão.** O porte mantém o
+  retrigger do Bela: a take volta ao início e o envelope sobe a partir do nível
+  atual. O plano deixava para decidir de ouvido se isso estalava em rulos; com
+  estes botões, não estala, e fica como está.
+- **Ganzá sem buraco nem estalo na emenda do loop.** É a opção A, sem o fade de
+  borda da M16 (seção 12) que abriria um buraco de ~20 ms a cada volta.
+- **As takes do p1 soam diferentes entre si**, e a variação agradou.
+
+### Situação
+
+| Item | Status |
+|---|---|
+| Disparo, soltura, release por preset, sorteio de takes | **ouvido na placa** (COM) e conferido no log |
+| Retrigger sem estalo | **ouvido**, repetindo um botão rápido |
+| Matriz 4×4 | **não testada**: os botões passam por `KeyMatrix<4,1>`, sem varredura de colunas |
+| 16 vozes ao mesmo tempo no firmware do Agbau | **não testado aqui**. A escada da seção 13 roda o mesmo `VoiceBank` até 64 vozes sem clique |

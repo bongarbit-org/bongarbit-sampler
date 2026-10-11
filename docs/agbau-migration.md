@@ -35,7 +35,7 @@ arquitetura.
 | 2 | 16 vozes + takes aleatórios + loop (ganzás) + tabela do kit | Depende só do 1. A voz enxerga `const int16_t*` + frames, então não depende da escolha do 0 |
 | 3 | Varredura da matriz 4×4 | Generaliza o `TriggerInput`; independe de 1 e 2 |
 | 4 | Mapa de pinos | Antes de fiar qualquer coisa; o 0 decide se o SD ocupa 4 pinos |
-| 5 | Firmware integrado: primeiro som | Junta 0–4. É também a revalidação pendente do ring de 5,8 ms, numa carga maior que a de 4 vozes |
+| 5 | Firmware integrado: primeiro som | Junta 0–4. Primeiro som com quatro botões em 11/10/2026 ([bancada.md](bancada.md), seção 14). A revalidação do ring de 5,8 ms, que estava prevista para cá, veio antes, na escada do spike (seção 13) |
 | 6 | Repeat (tap-tempo) e looper | O maior e mais arriscado; spec antes de código, e só depois de 5 tocar |
 | 7 | Placa física | Fora do firmware; pode andar em paralelo depois do 4 |
 
@@ -70,8 +70,13 @@ frame em que a take acaba, e é ali que o Bela congela o envelope (etapa 2): em
 quando ele corta, o envelope já está em 0, onde congelaria de qualquer jeito.
 É mais um ponto contra a opção B, a ser ouvido antes de ser aceito.
 
-Duas saídas, e a escolha fica para depois de medir as duas na placa
-(`src/test_agbau_storage.cpp`, env `agbau_storage`):
+Havia duas saídas. **A escolhida foi a (A)**, em 11/10/2026, depois do spike
+(`src/test_agbau_storage.cpp`, env `agbau_storage`; números em
+[bancada.md](bancada.md), seção 13): o mapeamento de ~9 MB cabe ao lado da
+PSRAM, 16 vozes usam 17% do bloco, e a escada de 1 a 64 vozes não estalou.
+A (B) não chegou a ser medida. Fica descrita como alternativa, e os dois
+comportamentos do `Wav::load()` descritos mais abaixo só voltam a importar se
+ela voltar.
 
 - **(A) Partição de dados na flash, mapeada em memória.** A flash do N16R8 tem
   16 MB; uma tabela de partições própria (`partitions_agbau.csv`: app de
