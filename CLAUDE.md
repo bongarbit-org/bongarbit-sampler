@@ -31,9 +31,10 @@ Trigger logic, mixer arithmetic and the DSP are verified on the host; everything
 - [src/mixer.h](src/mixer.h) — the fixed-point gain and soft-knee limiter. **No longer in the audio path**, kept as the *reference* the float limiter is tested against: it is the curve that was judged by ear on hardware. Do not delete it as dead code.
 - [src/audio_block.h](src/audio_block.h) — `AudioBlock`, the float units, and the conversions at the engine's edges. The float soft knee lives here.
 - [src/pitch_shift.h](src/pitch_shift.h) — `PitchShift`, the first stream processor. Two windowed taps on a delay line.
+- [src/kit_image.h](src/kit_image.h) — `KitImage`, the parser for the Agbau kit as one image in a flash data partition (written by [tools/agbau_kit.py](tools/agbau_kit.py)). Trusts nothing in the image: its pointers are read by the audio task, so every offset is bounds-checked in 64-bit and a partial write is caught by a zlib-compatible CRC. See [docs/agbau-migration.md](docs/agbau-migration.md).
 - [sim/trigger_model.h](sim/trigger_model.h) — header-only scaffolding: pin-trace generator, RC filter model, scoring runner, plus models of the two **rejected** trigger designs. Those are copies on purpose; they no longer exist in the firmware and exist only to keep failing in the documented way. **Timestamps are `uint32_t`**, matching `micros()`, so unsigned-difference arithmetic wraps in simulation exactly as on the board; `run()` takes a time base so the wrap boundary itself is testable.
 - [sim/trigger_sim.cpp](sim/trigger_sim.cpp) — the sweep/report CLI (`--sweep=all`).
-- [test/](test/) — four Unity suites: `test_trigger`, `test_mixer`, `test_audio_block`, `test_pitch_shift`. 71 cases.
+- [test/](test/) — five Unity suites: `test_trigger`, `test_mixer`, `test_audio_block`, `test_pitch_shift`, `test_kit_image`. 90 cases.
 
 The two windows are instance members with defaults from `TRIG_CONFIRM_US` / `TRIG_RELEASE_MS` (both `#ifndef`-guarded) rather than macros read inline, so sweeps and tests can vary them per instance. Costs 8 bytes per button.
 
@@ -53,11 +54,12 @@ Two dependencies are pinned to exact revisions, for the same reason:
 
 **M16 is pinned to an exact commit**, and this is not hypothetical caution: while this project was being built on top of it, M16 rewrote its output transport. `i2s_write_samples()` went from one `i2s_channel_write()` per frame to a `[[deprecated]]` shim over `audioBlockWrite()`, which batches 32 frames per DMA write — roughly 19% of one core's time, arriving with no code change on our side, and invalidating the framing of a whole bench session. The same update added a dual-core block-split mode in which the deprecated shim **returns false and writes nothing**. A floating audio dependency makes every "validated on hardware" note in `docs/` expire silently. Call `audioBlockWrite()`, never the shim.
 
-The three device environments share `src/` and are separated by `build_src_filter` because each has its own `setup()`/`loop()` pair. Adding a fourth sketch file means adding a filter exclusion to **every** env, not just the new one.
+The four device environments share `src/` and are separated by `build_src_filter` because each has its own `setup()`/`loop()` pair. Adding a fifth sketch file means adding a filter exclusion to **every** env, not just the new one.
 
 - `esp32-s3-devkitc-1` (default) — [src/main.cpp](src/main.cpp), the sampler. Uses SdFat via M16.
 - `sd_test` — [src/test_sd.cpp](src/test_sd.cpp), the stock Arduino `SD.h` example, kept to isolate SD hardware faults from SdFat/M16-specific ones.
 - `i2s_bench` — [src/test_i2s_bench.cpp](src/test_i2s_bench.cpp), the I2S transport measurement bench. No M16, no SdFat: sweeps feed models (ISR vs task, block vs per-frame) against nine DMA ring depths and reports CPU, jitter and underruns. Results in [docs/bancada.md](docs/bancada.md) section 9.
+- `agbau_storage` — [src/test_agbau_storage.cpp](src/test_agbau_storage.cpp), the Agbau storage spike: maps the kit from a flash partition and loads the trimmed kit from SD into PSRAM, times both, then plays sixteen voices at once through the sampler's ring. Builds with its own [partitions_agbau.csv](partitions_agbau.csv) (3MB factory app + 12.9MB `samples`) and an explicit `board_upload.maximum_size`, because PlatformIO does not read the ceiling of a `factory` partition and would otherwise check against the whole chip. `lib_deps` is interpolated from the sampler env so the M16 pin stays one line. Not measured on hardware yet.
 
 ## Real-time design (the load-bearing decisions)
 

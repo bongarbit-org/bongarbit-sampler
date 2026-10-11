@@ -1,0 +1,21 @@
+# Partition table for the Agbau on the ESP32-S3 N16R8 (16MB flash).
+# See docs/agbau-migration.md, step 0, and src/kit_image.h.
+#
+# The sampler firmware does NOT use this: it keeps the board definition's
+# default_16MB.csv. Only the agbau environments name this file.
+#
+# One factory app and no OTA pair. The default table spends 12.5MB on two
+# 6.25MB app slots for over-the-air updates this instrument will never do;
+# the firmware is under 1MB. That space is the sample kit instead: 8.995MB of
+# int16 today, read in place through esp_partition_mmap(), never copied.
+#
+# "samples" uses a custom data subtype (0x40 - 0xFE are reserved for
+# applications). Its offset is what the kit image is flashed to:
+#   esptool.py --chip esp32s3 write_flash 0x310000 kit.bin
+# Moving it means changing that command too.
+#
+# Name,    Type, SubType,  Offset,   Size
+nvs,       data, nvs,      0x9000,   0x5000,
+factory,   app,  factory,  0x10000,  0x300000,
+samples,   data, 0x40,     0x310000, 0xCE0000,
+coredump,  data, coredump, 0xFF0000, 0x10000,
