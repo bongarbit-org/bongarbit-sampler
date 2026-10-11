@@ -4,9 +4,16 @@ wav_to_header.py - Convert a PCM WAV file into a C header with a flash-embeddabl
 int16_t array, for use with M16's Samp::setTable() (see src/main.cpp,
 USE_SD_SAMPLER=0 path).
 
-Supports mono/stereo, 8/16/24/32-bit PCM. Higher bit depths are downconverted
-to 16-bit the same way M16's Wav::readFramesFast() does (SD-streaming path),
-so a sample sounds identical whether played from SD or from flash.
+Supports mono/stereo, 8/16/24/32-bit integer PCM. Other bit depths are
+downconverted to 16-bit with M16's own arithmetic, which at the pinned commit is
+the same in Wav::load() (readAudioData), readFrames() and readFramesFast().
+
+This used to promise that a sample "sounds identical whether played from SD or
+from flash". The conversion is identical; the result is not. Wav::load() then
+fades the first and last 10 ms of every buffer (applyEdgeFades()), and nothing
+here does. The SD path matches this output only with WAV_RESTORE_EDGES=1 in
+src/main.cpp, and only for a file loaded whole. See CLAUDE.md, "Embedding a
+sample in flash".
 
 Usage:
     python3 tools/wav_to_header.py <input.wav> <output.h> <ARRAY_NAME>

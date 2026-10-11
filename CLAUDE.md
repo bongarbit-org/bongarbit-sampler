@@ -152,7 +152,11 @@ GPIO7's pitch shifter is outside that switch and works in both modes, because it
 python3 tools/wav_to_header.py <input.wav> src/<name>_data.h <ARRAY_NAME>
 ```
 
-[tools/wav_to_header.py](tools/wav_to_header.py) downconverts 8/24/32-bit PCM to 16-bit using the same arithmetic as M16's `Wav::readFramesFast()`, so a sample is bit-identical whether it plays from SD or from flash. If M16's conversion changes, this script has to follow it.
+[tools/wav_to_header.py](tools/wav_to_header.py) downconverts 8/24/32-bit integer PCM to 16-bit with the same arithmetic M16 uses. At the pinned commit that arithmetic is identical in all three of M16's readers — `readAudioData()` (what `Wav::load()` runs), `readFrames()` and `readFramesFast()` — so the *conversion* matches. Float WAVs are not covered: Python's `wave` refuses format 3, though M16 reads it.
+
+**What plays does not match.** After converting, `Wav::load()` runs `applyEdgeFades()` unconditionally (M16 `Wav.h:199`, body at 209–249). It applies a 10 ms cosine ramp to the first and last frames of every sample, capped at 25% of the file. M16 means it to remove clicks at loop points and file edges, and at the start of a percussion hit the "click" is the attack. The flash path has no ramp. This paragraph used to say a sample is *bit-identical whether it plays from SD or from flash*. That holds for the conversion and not for the buffer, because the ramp had gone unnoticed. In a percussion sampler it is not cosmetic. Modelled on the host, the repo's own kick peaks at 6 ms, inside the ramp, and that peak drops 3.4 dB; its first 2 ms lose ~29 dB of energy.
+
+`WAV_RESTORE_EDGES=1` ([src/main.cpp](src/main.cpp), off by default, **not yet heard**) re-reads the faded edges with `readFrames()` after `load()`, which makes the claim true again for any sample loaded whole. A truncated sample keeps its fade-out, because that end is M16's cut rather than the file's. Re-reading was preferred over a loader of our own (`loadHeaderOnly()` + `readFrames()` into a `psramAllocSafe()` buffer), because that would also drop M16's truncation and its internal-RAM fallback, and leave the `Wav` reporting no buffer. Costs and the listening test are in [docs/bancada.md](docs/bancada.md) section 12. If M16's conversion or its ramp changes, both this script and that switch have to follow.
 
 Only `src/kick_normalizado_data.h` is included by the firmware. `src/kick_data.h` (from the un-normalized `kick.wav`) is a leftover and is referenced nowhere.
 

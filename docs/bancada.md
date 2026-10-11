@@ -1098,3 +1098,154 @@ Duas observações honestas sobre o que isso ensina:
 | Ring de 5,8 ms | limpo com 3 vozes nesta versão da M16; o teste de 4 vozes não é mais possível |
 | Conector USB | **não explicado** — áudio confiável no COM, não no nativo |
 | Latência absoluta (fase F) | **não medida**, e bloqueada até o conector estar entendido |
+
+---
+
+## 12. O fade de borda da M16 — 11/10/2026 (não ouvido)
+
+Achado lendo o código da M16, não ouvindo. **Nada desta seção foi verificado
+na placa.**
+
+### O que a M16 faz
+
+`Wav::load()` (M16 `aef89b2`, `Wav.h:199`) termina chamando
+`applyEdgeFades()` sempre, sem parâmetro para desligar. A função
+(`Wav.h:209–249`) multiplica o começo e o fim de cada buffer por uma rampa de
+cosseno:
+
+- **10 ms em tempo do arquivo**: 441 frames a 44,1 kHz, 110 a 11,025 kHz (a
+  taxa dos samples reais do cartão);
+- limitada a 25% do arquivo;
+- o primeiro e o último frame viram **exatamente 0**. A rampa está em −32 dB
+  com 1 ms, −20 dB com 2 ms e −6 dB com 5 ms.
+
+O comentário da M16 diz para que ela serve: tirar cliques "quando o áudio faz
+loop ou nas bordas do arquivo". Este sampler não faz loop, e na borda inicial
+de um sample de percussão o "clique" é o ataque.
+
+Nenhum caminho de carregamento do firmware escapa dela. O GPIO4 usa
+`loadNumber()` e os pads usam `load()`, e os dois acabam em `load()`
+(`loadNumber/First/Next/Prev` passam por `loadByIndex()`, que chama `load()`
+em `Wav.h:1280`). `setExternalBuffer()` só troca a alocação. O envelope do
+`Samp` fica desligado, porque precisa de uma tabela compartilhada que o
+firmware nunca inicializa — então essa rampa é o único fade no caminho.
+
+O caminho de flash (`USE_SD_SAMPLER=0`) não tem rampa nenhuma. Por isso o
+CLAUDE.md estava errado ao dizer que um sample é "bit-idêntico" tocando do SD
+ou da flash: a conversão é idêntica, o buffer não. Corrigido lá e no
+`tools/wav_to_header.py`.
+
+### Quanto pesa, num modelo
+
+Um modelo em Python da rampa (mesma fórmula; o arredondamento pode diferir em
+1 LSB do `cosf` da placa), aplicado ao kick do repositório
+(`src/kick_normalizado.wav`, o mesmo que o modo flash toca):
+
+| Janela | Pico sem → com rampa | Energia |
+|---|---|---|
+| Primeiro 1 ms | 4990 → 88 | −38,7 dB |
+| Primeiros 2 ms | 6094 → 283 | −28,8 dB |
+| Primeiros 5 ms | 26792 → 8958 | −10,9 dB |
+| Primeiros 10 ms | 29225 → 19750 | −4,9 dB |
+| Últimos 10 ms | 148 → 144 | irrelevante |
+
+O pico global do kick está em **6 ms**, dentro da rampa. Carregado pelo SD, ele
+toca com o pico 3,4 dB mais baixo e com o clique de ataque praticamente
+apagado. O `kick.wav` original (48 kHz, estéreo, não normalizado) dá as mesmas
+proporções, até 0,1 dB. Os
+samples reais do cartão (8 bit / 11,025 kHz) não estão no repositório e não
+foram medidos.
+
+O fim pesa pouco: um sample que decai até o silêncio chega lá com amostras
+quase nulas, e a rampa mexe nelas sem efeito.
+
+### O que o modelo não responde
+
+Se isso é **audível**. A previsão é que sim em ataques secos (kick, slap, aro)
+e não em material de ataque lento. Mas um transiente de 2 ms que o resto do
+som pode mascarar é exatamente o tipo de coisa que a aritmética superestima.
+Isso só se resolve de ouvido.
+
+### A chave: `WAV_RESTORE_EDGES`
+
+Está em `src/main.cpp`, guardada por `#ifndef`, com **padrão 0** — o
+comportamento da M16, inalterado. Com 1, o firmware relê do cartão, depois de
+cada `load()`, as bordas que a rampa tocou, usando `Wav::readFrames()`:
+
+- `readFrames()` converte para int16 com **a mesma aritmética** de `load()`
+  neste pin. Conferido linha a linha: 8, 16 e 24 bits, 32 bits inteiro e 32
+  bits float com clamp. Os frames relidos saem como se a rampa nunca tivesse
+  rodado.
+- Relê **20 ms** em cada ponta, o dobro da rampa. Reler a mais não faz mal
+  (os frames voltam idênticos); reler a menos deixaria o fim da rampa no lugar,
+  sem sintoma nenhum.
+- Se o arquivo foi **truncado** por falta de PSRAM, só o começo é restaurado.
+  O fim é o corte da M16, não o do arquivo, e ali a rampa evita um clique de
+  verdade.
+- Se a releitura falhar, imprime `edge re-read FAILED` (incondicional) e o
+  sample toca como hoje — nunca com lixo, porque `readFrames()` só escreve o
+  que conseguiu ler.
+
+Custo:
+
+| | |
+|---|---|
+| RAM interna | **+8.192 bytes** de `.bss`, medido (27.448 → 35.640): é exatamente o `static uint8_t tempBuffer[8192]` do próprio `readFrames()` (`Wav.h:554`), separado do que o `load()` usa. Só existe com a chave em 1 |
+| Flash | +0,8 KB |
+| Boot | Duas leituras curtas a mais por arquivo, de 20 ms de áudio cada |
+| Reprodução | Nenhum. Tudo acontece no `setup()`, e o SD continua intocado depois do boot |
+| Manutenção | Acoplada à M16. Em todo bump, reler `applyEdgeFades()` (o comprimento) e comparar `readAudioData()` com `readFrames()` (a conversão) |
+
+### A alternativa descartada: um carregador próprio
+
+`loadHeaderOnly()` + `psramAllocSafe()` + `readFrames()` num buffer nosso
+também evita a rampa, mas perde mais do que ganha:
+
+- **A política de alocação da M16.** O teto de 90% da PSRAM livre com segunda
+  tentativa a 75%, o truncamento (um arquivo grande demais passaria a falhar
+  em vez de ser cortado) e o fallback para `malloc()` na RAM interna. A
+  `psramAllocSafe()` sozinha não tem fallback nenhum.
+- **O estado do `Wav`.** `getBuffer()` ficaria `nullptr`, `isLoaded()` falso,
+  e `getFrameCount()` igual a `getFileFrameCount()` — qualquer aviso de
+  truncamento que compare os dois nunca dispararia.
+- **O limite do chunk `data`.** `readFrames()` não para no fim dele: pedir
+  frames demais converte como áudio o que vier depois (chunks `LIST` ou `cue`,
+  que DAW costuma anexar). Teria que ser limitado à mão.
+- **Leitura curta silenciosa.** `readFrames()` devolve só "leu alguma coisa",
+  não quantos frames. Uma leitura curta deixa o resto de um buffer recém-alocado
+  com lixo, a menos que ele seja zerado antes.
+- **`readFramesFast()` não é equivalente.** É o caminho que o
+  `wav_to_header.py` dizia espelhar, e ele difere em float de 32 bits: não faz
+  clamp em ±1,0 (`Wav.h:714–716`). Em inteiro é igual.
+
+Reler as bordas depois do `load()` não perde nada disso.
+
+### Como ouvir
+
+1. Anotar o conector USB. Pela seção 11, todo resultado de ouvido registra o
+   conector.
+2. Gravar o build normal e tocar cada pad isolado.
+3. Gravar com a chave ligada:
+   ```bash
+   PLATFORMIO_BUILD_FLAGS='-DWAV_RESTORE_EDGES=1' pio run -e esp32-s3-devkitc-1 -t upload
+   ```
+   Conferir no boot uma linha `fades undone` por arquivo. Sem ela, o build não
+   é o que se pensa. A M16 continua imprimindo `Applying 10ms fade` antes dela,
+   e isso é esperado.
+4. Comparar o ataque. O que deve mudar é o "tec" inicial de kick, slap ou aro,
+   que fica mais presente. Um clique **novo** no começo de algum sample quer
+   dizer que o arquivo começa fora do zero — um defeito do arquivo que a rampa
+   estava escondendo, não da chave.
+5. Registrar aqui. Se a diferença for audível e para melhor, virar o padrão
+   para 1 num commit próprio.
+
+### Estado
+
+| Item | Estado |
+|---|---|
+| A rampa existe e roda em todo sample do SD | **confirmado no código** (M16 `aef89b2`) |
+| Efeito no kick do repositório | **modelado no host**, não medido na placa |
+| Releitura bit-idêntica à conversão do `load()` | **lido no código**, não executado |
+| `WAV_RESTORE_EDGES=1` | **compila**; nunca rodou na placa |
+| `WAV_RESTORE_EDGES=0` (padrão) | build **idêntico ao do `main`** em todas as seções (`.text`, `.rodata`, `.data`, `.bss`) — o padrão não mudou nada |
+| Audível | **não ouvido** |

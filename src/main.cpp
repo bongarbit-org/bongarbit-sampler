@@ -245,6 +245,61 @@ float masterGain = 1.0f;
 SdFs sd;
 Wav  wav;
 
+// --- M16's edge fades (docs/bancada.md, section 12) ---
+// Wav::load() ends by multiplying the first and last 10 ms of every buffer by
+// a cosine ramp, unconditionally (M16 aef89b2, Wav.h:199, ramp at 209-249).
+// M16 means it to remove clicks at loop points and file edges. This sampler
+// never loops, and at the start of a percussion hit the "click" is the
+// attack: the ramp starts every sample from exactly zero and is still at -6dB
+// at 5 ms. The repo's own kick peaks at 6 ms, inside it.
+//
+// 1 = undo the ramp: re-read the faded edges from the card with readFrames().
+// It converts to int16 with the same arithmetic as load() at this pin, so the
+// buffer comes out as if the ramp had never run - and identical to what
+// tools/wav_to_header.py embeds in flash, where there is no ramp at all.
+// 0 = M16's behaviour, untouched. It stays the default until the two have
+// been compared by ear: whether the ramp is audible on this material is not
+// known, only that it is there. Flip it for one build without editing:
+//
+//   PLATFORMIO_BUILD_FLAGS='-DWAV_RESTORE_EDGES=1' pio run -e esp32-s3-devkitc-1 -t upload
+#ifndef WAV_RESTORE_EDGES
+  #define WAV_RESTORE_EDGES 0
+#endif
+
+static void restoreEdges(Wav& w) {
+#if WAV_RESTORE_EDGES
+  const unsigned long total = w.getFrameCount();
+  // 20 ms, twice M16's ramp. Re-reading frames the ramp never touched is
+  // harmless - they come back identical - while re-reading too few would leave
+  // the end of the ramp in place with no symptom at all. The margin absorbs a
+  // modest change on an M16 bump; it does not replace re-reading Wav.h then.
+  unsigned long n = w.getSampleRate() / 50;
+  if (n > total) n = total;
+  if (n == 0) return;
+  bool ok = w.readFrames(0, n, w.getBuffer());
+  // A truncated load keeps its fade-out. That end is M16's cut, not the
+  // file's, and a cut mid-signal is the click the ramp exists to prevent.
+  const bool whole = (total == w.getFileFrameCount());
+  if (whole) {
+    ok = w.readFrames(total - n, n, w.getBuffer() + (total - n) * w.getChannels()) && ok;
+  }
+  // A failed read leaves those frames as load() faded them - the M16 sound,
+  // never garbage, since readFrames() only writes what it actually read. It
+  // reports only whether it read anything, though, so a short read passes as
+  // success with part of the ramp still in place. Unlikely for frames load()
+  // has just read; not detectable from here.
+  if (!ok) {
+    Serial.printf("WAV: '%s' edge re-read FAILED - plays with M16's fades\n",
+                  w.getFilename());
+    return;
+  }
+  DBG("WAV: '%s' fades undone (%lu frames re-read at %s)\n",
+      w.getFilename(), n, whole ? "each end" : "the start; truncated, fade-out kept");
+#else
+  (void)w;
+#endif
+}
+
 // --- Extra pads: 1.wav / 2.wav on the SD card root ---
 // Two, not three: GPIO7 stopped being a pad and became the pitch shifter's
 // hold control (see FX_PIN below). /3.wav is no longer loaded, and the card
@@ -462,6 +517,7 @@ void setup() {
       wav.getFilename(), sampleChannels, (unsigned long)wav.getSampleRate(),
       wav.getFrameCount(),
       (unsigned long)(1000ULL * wav.getFrameCount() / wav.getSampleRate()));
+  restoreEdges(wav);
 
   // Samp::setTable() computes the buffer-rate -> output-rate ratio itself,
   // so the sample plays at its original speed regardless of the file's
@@ -484,6 +540,7 @@ void setup() {
         i + 1, padWav[i].getFilename(), padChannels[i],
         (unsigned long)padWav[i].getSampleRate(), padWav[i].getFrameCount(),
         (unsigned long)(1000ULL * padWav[i].getFrameCount() / padWav[i].getSampleRate()));
+    restoreEdges(padWav[i]); // setTable() keeps the pointer, so order is free
   }
 #else
   sampleChannels = KICK_NORMALIZADO_CHANNELS;
