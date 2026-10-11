@@ -17,9 +17,11 @@
  *
  * The kit is read in place from the flash "samples" partition (option A of
  * step 0, docs/bancada.md section 13): written once with
- *   python3 tools/agbau_kit.py <agbau samples dir> --partition kit.bin
- *   esptool.py --chip esp32s3 write_flash 0x310000 kit.bin
- * and never copied. Uploading this firmware does not touch it.
+ *   python3 tools/agbau_kit.py <agbau samples dir> --partition .pio/agbau_kit/kit.bin
+ *   ~/.platformio/penv/bin/python ~/.platformio/packages/tool-esptoolpy/esptool.py \
+ *       --chip esp32s3 --baud 921600 write_flash 0x310000 .pio/agbau_kit/kit.bin
+ * and never copied. Uploading this firmware does not touch it. esptool runs
+ * on PlatformIO's own python because the project venv lacks its dependencies.
  *
  * Everything that makes sound is a host-tested header: the envelope
  * (envelope.h), the voices and the queue that is the only path from loop()

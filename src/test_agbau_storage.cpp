@@ -45,9 +45,10 @@
  *
  *   (A) python3 tools/agbau_kit.py <agbau samples dir> --partition kit.bin
  *       pio run -e agbau_storage -t upload        (writes the partition table)
- *       .venv/bin/python ~/.platformio/packages/tool-esptoolpy/esptool.py \
- *           --chip esp32s3 write_flash 0x310000 kit.bin
- *       The offset is the "samples" row of partitions_agbau.csv.
+ *       ~/.platformio/penv/bin/python ~/.platformio/packages/tool-esptoolpy/esptool.py \
+ *           --chip esp32s3 --baud 921600 write_flash 0x310000 kit.bin
+ *       The offset is the "samples" row of partitions_agbau.csv. PlatformIO's
+ *       own python, because the project venv lacks esptool's dependencies.
  *
  *   (B) python3 tools/agbau_kit.py <agbau samples dir> --trim-envelope \
  *           --trim-tail-db -60 --sd sd_kit

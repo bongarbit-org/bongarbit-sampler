@@ -296,6 +296,7 @@ def write_partition(takes, out_path):
     if len(image) > PARTITION_BYTES:
         raise ValueError(f"image is {len(image):,d} bytes, partition holds "
                          f"{PARTITION_BYTES:,d}")
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "wb") as f:
         f.write(image)
     print(f"wrote {out_path}: {len(takes)} takes, {len(image):,d} bytes, "

@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Firmware for a button-triggered one-shot sampler with live effects: ESP32-S3 N16R8 + PCM5102A I2S DAC + microSD (SPI), built on the [M16](https://github.com/algomusic/M16) audio library under Arduino/PlatformIO. Three sample triggers (GPIO4/5/6), one held-button pitch shifter (GPIO7), samples resident in PSRAM, no OS scheduler in the audio path beyond M16's own I2S task.
 
+A second instrument shares the engine: the **Agbau** ([src/agbau_main.cpp](src/agbau_main.cpp), env `agbau`), sixteen polyphonic voices with ADSR envelopes, being moved off a Bela plus an Arduino onto this one board. Its kit lives in a flash partition instead of PSRAM. It is at its first bring-up (four buttons, four voices, heard on hardware); the plan and the state of each step are in [docs/agbau-migration.md](docs/agbau-migration.md).
+
 Where it is going: the board is meant to take a **live audio-in stream**, process it, and emit a live audio-out stream. The sampler is the current load, not the destination. That is why the audio engine renders **blocks of normalised float** rather than single fixed-point frames — see "Real-time design" below. Any new DSP belongs in that chain, in those units, and must not assume the host block size.
 
 ## Build / flash / debug
@@ -15,7 +17,17 @@ pio run                      # build default env (sampler firmware)
 pio run -t upload            # flash
 pio device monitor           # serial log, 115200 baud
 pio run -e sd_test -t upload # flash the standalone SD diagnostic instead
+pio run -e agbau -t upload   # flash the Agbau instead (its kit is flashed separately, below)
 ```
+
+The Agbau's kit is an image in its own flash partition, written once and left alone by every firmware upload, the sampler's included:
+
+```bash
+python3 tools/agbau_kit.py ../agbau/Bela/agbau-sampler-poly/samples --partition .pio/agbau_kit/kit.bin
+~/.platformio/penv/bin/python ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 --baud 921600 write_flash 0x310000 .pio/agbau_kit/kit.bin
+```
+
+esptool runs on PlatformIO's own python, not the project venv, which lacks its dependencies. The offset is the `samples` row of [partitions_agbau.csv](partitions_agbau.csv); the firmware checks the image's CRC at boot and refuses a partial write.
 
 PlatformIO lives in a project-local venv (gitignored), so the commands above are `.venv/bin/pio ...` unless you activate it. Create it with `python3 -m venv .venv && .venv/bin/pip install platformio` — Debian's system Python is PEP 668 externally-managed, so a bare `pip install` is refused.
 

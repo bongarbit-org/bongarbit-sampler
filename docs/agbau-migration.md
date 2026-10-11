@@ -39,6 +39,19 @@ arquitetura.
 | 6 | Repeat (tap-tempo) e looper | O maior e mais arriscado; spec antes de código, e só depois de 5 tocar |
 | 7 | Placa física | Fora do firmware; pode andar em paralelo depois do 4 |
 
+### Situação em 11/10/2026
+
+| # | Etapa | Situação |
+|---|---|---|
+| 0 | Onde as samples moram | **Feita.** Escolhida a opção A, a flash mapeada ([bancada.md](bancada.md), seção 13). `tools/agbau_kit.py` gera a imagem |
+| 1 | Envelope | Testado no host contra a cópia do Bela (`test_envelope`). Ouvido na placa nos três presets (seção 14) |
+| 2 | Vozes e kit | Testado no host contra o `Sampler` do Bela e o mapa de notas do `.ino` (`test_voice`). Ouvido na placa: takes sorteadas, release de cada preset, retrigger sem estalo (seção 14) |
+| 3 | Matriz 4×4 | Testada no host (`test_key_matrix`). Na placa, só como `KeyMatrix<4,1>`: quatro botões diretos, sem varredura de colunas |
+| 4 | Mapa de pinos | No papel, lido da placa de circuito do Agbau ([agbau-circuit.md](agbau-circuit.md)), com pontos a conferir no instrumento |
+| 5 | Firmware integrado | **Em andamento.** Quatro botões tocando quatro vozes (`src/agbau_main.cpp`). Falta a matriz, o botão de modo e o pedal |
+| 6 | Repeat e looper | Não começada. A spec vem antes do código |
+| 7 | Placa física | Não começada |
+
 A primeira versão punha o orçamento de memória (então etapa 4) e o mapa de
 pinos (então 5) *depois* do código que dependia deles — e o próprio texto
 dizia "decidir isso antes da etapa 2". Eles vieram para a frente.
@@ -263,12 +276,18 @@ neles, a matriz lê errado; e J4 é uma saída MIDI DIN que o firmware nunca uso
 Um sketch novo, `src/agbau_main.cpp`, num env `agbau` que compartilha os
 headers de `src/` — o Agbau é outro conjunto de vozes e outro conjunto de
 botões sobre o mesmo motor. O override do ring de DMA e seus `static_assert`
-saem de `main.cpp` para um header incluído antes de `M16.h` pelos dois
-sketches, para que exista uma definição só.
+saíram de `main.cpp` para `src/engine_config.h`, que entra pelo
+`audio_block.h` e por isso vale para todo motor em bloco, com uma definição só.
+O build falha se o `M16.h` vier antes dele.
 
-O teste de bancada mais pesado — as 16 teclas de uma vez — é também a
-revalidação que o ring de 5,8 ms deve desde a troca de pin do M16 (ver
-CLAUDE.md), numa carga quatro vezes maior que a do teste original.
+A revalidação que o ring de 5,8 ms devia desde a troca de pin do M16 estava
+prevista para cá, no teste das 16 teclas de uma vez. Ela veio antes, na escada
+de vozes do spike: de 1 a 64 vozes, sem clique (bancada.md, seção 13).
+
+O primeiro som saiu menor que esta etapa, de propósito: quatro botões diretos
+nos pinos que a bancada já tinha, cada um tocando uma voz, para ouvir os
+disparos antes de decidir qualquer coisa sobre a posição das teclas (seção 14).
+Falta a matriz, o botão de modo e o pedal.
 
 O Bela não tinha limitador; aqui a soma passa pelo joelho suave. Com muita
 polifonia os picos saem mais macios do que saíam no Bela. É uma diferença
