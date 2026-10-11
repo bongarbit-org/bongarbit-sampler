@@ -32,69 +32,20 @@
  *    processes the mix rather than a sample of its own.
  */
 
-// --- Audio output latency (MUST be set before including M16.h) ---
-// The I2S DMA ring is where the trigger-to-sound time is spent. The library
-// default is 4 x 512 = 2048 frames = 46ms at 44.1kHz, sized to survive a flash
-// sector erase on the host (~30-40ms).
+// --- The audio engine: block-based, float (see src/audio_block.h) ---
+// audioUpdate() renders AUDIO_BLOCK_FRAMES frames per call into a normalised
+// float block, instead of returning one frame at a time. The three reasons -
+// driver calls, PSRAM locality, and the fact that DSP with memory needs a
+// window - are documented in that header. The third is the one that forced it.
 //
-// M16 drains it in M16_BLOCK_SIZE (32) frame bursts: audioBlockWrite()
-// accumulates a block and issues one i2s_channel_write() per 32 frames, which
-// is what paces the audio task. It fed the ring one frame per driver call
-// until the library changed under this project - see the pin note in
-// platformio.ini. That is why the pin exists, and why the ring depth is the
-// figure to tune rather than anything about how it gets filled.
-//
-// That worst case does not exist in this firmware: samples are resident in
-// PSRAM, the SD card is never touched after boot, there is no WiFi, and
-// nothing writes to flash at runtime. The only producer stall left is a PSRAM
-// cache miss inside audioUpdate(), measured at ~110 cycles per frame for four
-// voices (docs/bancada.md section 9). M16's own comment names this exact case
-// as the reason the values are overridable ("percussive/Beat Machine style").
-//
-// 4 x 64 = 256 frames = 5.8ms. Validated on hardware 13/08/2026: clean on a
-// fast roll with all four voices sounding at once, which is the heaviest
-// audioUpdate() path. See docs/bancada.md, "Fase E".
-//
-// That was measured against an M16 checkout that no longer exists, from
-// before the transport changed; the ring is now drained in 32-frame bursts
-// rather than one frame per driver call. Re-confirmed on the current pin on
-// 11/10/2026 by the agbau_storage voice ladder: 1 to 64 voices, the longest
-// gap between renders 1.4ms against this 5.8ms ring, and no click on a pure
-// sine at any step (docs/bancada.md section 13). That was the Agbau's engine
-// rather than this one, but the same ring, block size and transport, under a
-// far heavier load than four voices.
-//
-// Getting that answer required removing two confounds that both sound exactly
-// like an underrun, and which made 5.8ms appear to fail:
-//   - 8-bit source samples. A ~48dB quantisation floor crackles on decay tails.
-//   - Clipping. audioUpdate() sums voices and clips once at the end, so two
-//     normalised samples (89% of full scale) sum to 178% and clip hard.
-// The ladder only became meaningful with 16-bit/44.1kHz samples attenuated to
-// ~22% each, where four voices sum to 89% and nothing clips.
-//
-// Tuning ladder, if it ever needs walking again:
-//   clicks/dropouts  -> raise DMA_BUFFER_LENGTH (128 = 11.6ms, 256 = 23ms)
-//   clean, want less -> 4 x 32 = 2.9ms, then 4 x 16 = 1.5ms
-// Test on a fast roll with all four voices at once, on samples that neither
-// clip nor carry their own noise floor - otherwise the ladder measures those.
-#define DMA_BUFFERS       4
-#define DMA_BUFFER_LENGTH 64
+// It also brings the I2S DMA ring, 4 x 64 = 5.8ms instead of M16's 46ms
+// (src/engine_config.h: why that depth, how it was validated, the tuning
+// ladder). M16 reads the ring with #ifndef, so this include has to stay ABOVE
+// M16.h; the build fails if it drifts below.
+#include "audio_block.h"
 
 #include "M16.h"
 #include "Samp.h"
-
-// The override above only works while it sits BEFORE the include - M16 guards
-// its own values with #ifndef. Moving it below, or dropping it, silently
-// restores the 2048-frame default and puts 46ms back into the trigger path
-// with no other symptom. Fail the build instead.
-// The bound only has to be below M16's own default of 4 x 512 = 2048 frames;
-// anything smaller proves the override was seen. 512 leaves room for the two
-// rungs above the validated 256 without being anywhere near the default. It was
-// briefly raised to 1024 on the bench of 13/08/2026 to try 4 x 256, back when
-// clipping was being mistaken for an underrun - that reason did not survive.
-static_assert(DMA_BUFFERS * DMA_BUFFER_LENGTH <= 512,
-              "I2S ring deeper than 512 frames (~12ms) - the DMA override has "
-              "drifted below #include \"M16.h\" and M16's default came back");
 
 // --- Sample source: 1 = load one .wav from SD into RAM/PSRAM at boot,
 //                    0 = play from embedded flash array ---
@@ -172,24 +123,8 @@ static_assert(DMA_BUFFERS * DMA_BUFFER_LENGTH <= 512,
 //
 // To change TRIG_CONFIRM_US or TRIG_RELEASE_MS, define them before this
 // include - the header guards its defaults with #ifndef, same as the DMA
-// override above.
+// ring in engine_config.h.
 #include "trigger_input.h"
-
-// --- The audio engine: block-based, float (see src/audio_block.h) ---
-// audioUpdate() renders AUDIO_BLOCK_FRAMES frames per call into a normalised
-// float block, instead of returning one frame at a time. The three reasons -
-// driver calls, PSRAM locality, and the fact that DSP with memory needs a
-// window - are documented in that header. The third is the one that forced it.
-#include "audio_block.h"
-
-// Rendering one block must not take a meaningful bite out of the ring that is
-// draining while we render it. A quarter of the ring is the bound: it leaves
-// three block periods of slack for the worst-case render, which at four voices
-// measured ~3,500 cycles against a 174,000-cycle block period. Both constants
-// are only visible together here, which is why the assert lives in main.cpp.
-static_assert(AUDIO_BLOCK_FRAMES * 4 <= DMA_BUFFERS * DMA_BUFFER_LENGTH,
-              "audio block is more than a quarter of the DMA ring - either "
-              "shrink AUDIO_BLOCK_FRAMES or deepen the ring");
 
 // --- Mixer gain staging and output limiting ---
 // Two independent switches, both on, both reversible, because they change how

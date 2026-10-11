@@ -28,28 +28,19 @@
  * trigger_input.h). This file only wires them to pins, flash and M16.
  */
 
-// Same ring as the sampler (src/main.cpp explains the numbers, and why these
-// must sit above the M16 include). Duplicated, asserts and all, until it is
-// factored into one header the two sketches share.
-#define DMA_BUFFERS       4
-#define DMA_BUFFER_LENGTH 64
+// First, because it also sets the I2S ring (5.8ms, the sampler's) and M16
+// reads that with #ifndef - see src/engine_config.h. The build fails if this
+// drifts below M16.h.
+#include "audio_block.h"
 
 #include "M16.h"
 #include <esp_partition.h>
 #include <esp_random.h>
 
-static_assert(DMA_BUFFERS * DMA_BUFFER_LENGTH <= 512,
-              "I2S ring deeper than 512 frames (~12ms) - the DMA override has "
-              "drifted below #include \"M16.h\" and M16's default came back");
-
-#include "audio_block.h"
 #include "kit_image.h"
 #include "voice.h"
 #include "agbau_kit.h"
 #include "key_matrix.h"
-
-static_assert(AUDIO_BLOCK_FRAMES * 4 <= DMA_BUFFERS * DMA_BUFFER_LENGTH,
-              "audio block is more than a quarter of the DMA ring");
 
 // --- Diagnostics -------------------------------------------------------------
 // Both ON by default here, unlike the sampler, and on purpose: this firmware

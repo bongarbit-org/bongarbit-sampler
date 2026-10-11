@@ -5,7 +5,9 @@
  *
  * Compiled into the firmware AND into the host test suite, for the same reason
  * trigger_input.h and mixer.h are. Nothing here touches Arduino, M16 or the
- * I2S driver, so the arithmetic can be verified on a desktop.
+ * I2S driver, so the arithmetic can be verified on a desktop. It does carry
+ * the I2S ring's size (engine_config.h), as two macros M16 reads, which is why
+ * it has to be included before M16.h.
  *
  * WHY BLOCKS
  *
@@ -52,14 +54,19 @@
 // convenience, not a requirement: the engine drains each block immediately
 // instead of holding it, so a mismatch would only mean the pacing granularity
 // is the larger of the two. What IS a requirement is staying well under the
-// DMA ring depth, because the ring drains while we render - main.cpp asserts
-// that relationship, where both numbers are visible.
+// DMA ring depth, because the ring drains while we render - engine_config.h,
+// included right below, sets the ring and asserts that relationship.
 //
 // It is also the latency floor of any block-based processor downstream, which
 // is the other reason not to grow it casually.
 #ifndef AUDIO_BLOCK_FRAMES
   #define AUDIO_BLOCK_FRAMES 32
 #endif
+
+// The ring this block drains into. Included here rather than by each sketch,
+// so no block engine can leave it out; the price is that this header has to
+// come before M16.h, which engine_config.h enforces.
+#include "engine_config.h"
 
 // 2^15, the scale factor between normalised float and the 16-bit output word.
 // Deliberately 32768 and not 32767: it makes the conversion an exact power of

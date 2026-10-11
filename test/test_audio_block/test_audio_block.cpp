@@ -96,8 +96,8 @@ void test_silence_clears_every_frame_of_both_channels(void) {
 
 // The block is the latency floor of every processor downstream of it, and it
 // has to stay small relative to the DMA ring that drains while we render.
-// main.cpp asserts the ring relationship, where both numbers are visible; this
-// asserts the half that is a property of the header alone.
+// engine_config.h asserts the ring relationship at compile time, in this suite
+// as in the firmware; this asserts the half that is a property of the block alone.
 void test_block_is_small_enough_to_be_a_latency_floor(void) {
   TEST_ASSERT_TRUE(AUDIO_BLOCK_FRAMES >= 8);    // below this, per-block overhead dominates
   TEST_ASSERT_TRUE(AUDIO_BLOCK_FRAMES <= 64);   // 64 frames = 1.45ms, already past "sub-ms"

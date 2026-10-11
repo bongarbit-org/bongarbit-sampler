@@ -59,11 +59,10 @@
  * the user's to make from them.
  */
 
-// Same ring as the sampler (src/main.cpp explains the numbers). Duplicated,
-// asserts and all, until the Agbau firmware factors them into one header -
-// docs/agbau-migration.md, step 5.
-#define DMA_BUFFERS       4
-#define DMA_BUFFER_LENGTH 64
+// First, because it also sets the I2S ring (5.8ms, the sampler's) and M16
+// reads that with #ifndef - see src/engine_config.h. The build fails if this
+// drifts below M16.h.
+#include "audio_block.h"
 
 #include "M16.h"
 #include "Wav.h"
@@ -74,16 +73,8 @@
 #include <stdarg.h>
 #include <math.h>
 
-static_assert(DMA_BUFFERS * DMA_BUFFER_LENGTH <= 512,
-              "I2S ring deeper than 512 frames (~12ms) - the DMA override has "
-              "drifted below #include \"M16.h\" and M16's default came back");
-
-#include "audio_block.h"
 #include "kit_image.h"
 #include "voice.h"
-
-static_assert(AUDIO_BLOCK_FRAMES * 4 <= DMA_BUFFERS * DMA_BUFFER_LENGTH,
-              "audio block is more than a quarter of the DMA ring");
 
 // --- Knobs, all #ifndef-guarded so they can be set per build ---------------
 

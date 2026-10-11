@@ -322,8 +322,8 @@ dentro do `loop()`.
 ## Calibrar o ring de DMA — a parte que precisa da placa
 
 Esta é a única alteração do pacote que **não** pôde ser verificada sem
-hardware, e é a de maior impacto. O `main.cpp` define, antes do
-`#include "M16.h"`:
+hardware, e é a de maior impacto. O `src/engine_config.h` (que entra pelo
+`audio_block.h`, antes do `#include "M16.h"`) define:
 
 ```c
 #define DMA_BUFFERS       4
