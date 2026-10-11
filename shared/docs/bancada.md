@@ -1447,3 +1447,40 @@ contagem.
 | Três vozes, soltura, sorteio de takes | **ouvido na placa** com este firmware e conferido no log |
 | Botão de modo e pedal: disparo, soltura, intervalo, tempo apertado | **conferido no log** |
 | Repeat e looper | **não existiam nesta rodada**. A spec (`looper.md`) foi aprovada depois dela, e o código veio em seguida |
+
+## 16. Agbau: repeat e looper, de ouvido — 11/10/2026
+
+Primeira rodada com o repeat e o looper de
+[agbau/docs/looper.md](../../agbau/docs/looper.md) (commit `9331a10`), na
+mesma bancada da seção 15: b1, p1 e p3 nos GPIO 4–6, o botão de modo no GPIO7
+e o pedal no GPIO39. Os LEDs não estão ligados.
+
+O roteiro foi o da seção "Na bancada atual" do `looper.md`, e **os cinco
+pontos soaram como a spec descreve**:
+
+| Teste | O que se esperava |
+|---|---|
+| Repeat | bater o tempo no modo e segurar o p1: repete no tempo, trocando de take. O b1 no repeat passa de 4 para 2 por compasso. Segurar o modo 1 s sai do repeat |
+| Ganzá no repeat | segurar o p3 no repeat: o loop recomeça a cada batida e para ao soltar |
+| Bug 7 | segurar o p3 no modo nota, bater o tempo e soltar: o ganzá para |
+| Looper | gravar, fechar, abrir overdub e tocar por cima: o overdub fecha sozinho no começo do loop. Segurar o pedal 1 s apaga, e nada continua tocando |
+| Repeat dentro do loop | um loop gravado com repeat se mantém no tempo, volta após volta |
+
+O registro é o relato de quem tocou ("me parece tudo ok"). Nenhum log desta
+rodada foi lido, e não houve medição de deriva na placa: a garantia de que o
+loop não deriva vem dos testes do host (`test_loop_does_not_drift`,
+`test_repeat_grid_does_not_drift`), e o ouvido não contradisse.
+
+Uma coisa que confundiu no caminho, e que não é defeito: na bancada só há o b1,
+então a divisão vai de 4 para 2 por compasso e não volta. A divisão sobrevive
+à saída e à volta do repeat, como no `.ino`, e só um reset a devolve a 4.
+
+### Situação
+
+| Item | Status |
+|---|---|
+| Repeat, divisão, sair segurando | **ouvido na placa** |
+| Looper: gravar, overdub, apagar | **ouvido na placa** |
+| Bug 7 (ganzá atravessando a troca de modo) | **ouvido na placa** |
+| Repeat e looper com as 16 teclas | **não testado**: falta a matriz |
+| LEDs | **não testados**: nada ligado nos GPIO 15 e 8 |

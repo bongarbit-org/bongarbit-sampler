@@ -3,8 +3,9 @@
 **Aprovada em 11/10/2026.** Etapa 6 de [migration.md](migration.md).
 Implementada em `agbau/src/tap_tempo.h` (tap-tempo e repeat),
 `agbau/src/looper.h` e `agbau/src/performer.h` (o que liga as teclas aos dois
-e às vozes), testada no host (`test/agbau/test_performer`). **Ainda não foi
-tocada na placa.** Mudar o comportamento é mudar este documento primeiro.
+e às vozes), testada no host (`test/agbau/test_performer`) e ouvida na bancada
+de três vozes, modo e pedal ([shared/docs/bancada.md](../../shared/docs/bancada.md),
+seção 16). Mudar o comportamento é mudar este documento primeiro.
 
 A implementação precisou fixar quatro detalhes que o texto aprovado deixava
 em aberto. Eles estão marcados com *(implementação)* onde aparecem: o

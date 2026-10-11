@@ -4,7 +4,7 @@ A migração do [Agbau](https://www.instagram.com/bongarbit/), hoje uma Bela mai
 um Arduino, para um único ESP32-S3: 16 vozes com envelope ADSR, e o kit numa
 partição da flash. **Estágio atual:** três botões tocando três vozes,
 ouvidos na placa, mais o botão de modo e o pedal, com repeat e looper testados
-no host e ainda não tocados na placa. O plano completo e a situação de cada etapa estão em
+no host e ouvidos na placa. O plano completo e a situação de cada etapa estão em
 [docs/migration.md](docs/migration.md).
 
 O motor de áudio, o condicionamento dos botões e a fiação da placa base são

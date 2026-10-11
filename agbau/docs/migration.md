@@ -39,8 +39,8 @@ não pesquisa de arquitetura.
 | 2 | Vozes e kit | **Feita.** Testada no host contra o `Sampler` do Bela e o mapa de notas do `.ino`, ouvida (seção 14) | `agbau/src/voice.h`, `agbau/src/agbau_kit.h` |
 | 3 | Matriz 4×4 | Testada no host. Na placa, só como `KeyMatrix<4,1>` (botões diretos, sem varredura de colunas) | `agbau/src/key_matrix.h` |
 | 4 | Mapa de pinos | No papel, lido da placa de circuito. Três pontos a conferir no instrumento | [circuit.md](circuit.md) |
-| 5 | Firmware integrado | **Em andamento.** Três vozes ouvidas, botão de modo e pedal conferidos no log (seção 15). Falta a matriz | `agbau/src/main.cpp` |
-| 6 | Repeat e looper | Spec aprovada, implementada e testada no host. **Ainda não tocada na placa** | [looper.md](looper.md), `tap_tempo.h`, `looper.h`, `performer.h` |
+| 5 | Firmware integrado | **Em andamento.** Três vozes, botão de modo e pedal, com repeat e looper, ouvidos na placa (seções 15 e 16). Falta a matriz | `agbau/src/main.cpp` |
+| 6 | Repeat e looper | **Feita na bancada.** Spec aprovada, implementada, testada no host e ouvida com três vozes, modo e pedal (seção 16). Falta tocar com as 16 teclas | [looper.md](looper.md), `tap_tempo.h`, `looper.h`, `performer.h` |
 | 7 | Placa física | Não começada | — |
 
 A ordem das etapas mudou uma vez. A primeira versão do plano punha o
@@ -49,11 +49,7 @@ e por isso eles vieram para a frente (etapas 0 e 4).
 
 ## O que falta, na ordem em que faz sentido
 
-1. **Tocar o repeat e o looper na placa.** O código existe e passa nos testes
-   do host. Ninguém ouviu ainda. A bancada atual (três vozes, modo e pedal)
-   cobre todo o comportamento; o roteiro está em [looper.md](looper.md),
-   seção "Na bancada atual".
-2. **Conferir o instrumento antes de fiar.** Três coisas que só o instrumento
+1. **Conferir o instrumento antes de fiar.** Três coisas que só o instrumento
    confirma (detalhes na etapa 4):
    - onde está o botão de modo: o `.ino` usa o pino D15, mas a placa liga o
      conector livre (J6) no A0;
@@ -62,20 +58,20 @@ e por isso eles vieram para a frente (etapas 0 e 4).
      errado;
    - qual GPIO o LED RGB do DevKitC-1 ocupa (38 ou 48, conforme a revisão da
      placa).
-3. **Matriz 4×4 na placa.** Fiar as colunas nos GPIO 4–7 e as linhas nos
+2. **Matriz 4×4 na placa.** Fiar as colunas nos GPIO 4–7 e as linhas nos
    GPIO 1, 2, 42 e 41. No firmware, trocar a `KeyMatrix<4,1>` de botões diretos
    pela `KeyMatrix<4,4>` com IO de verdade: uma coluna em LOW por vez, as
    outras em alta impedância. O botão de modo sai da matriz e vai para o
    GPIO40, como um `TriggerInput` próprio, igual ao pedal. Na bancada,
    conferir três coisas: que não há tecla fantasma, que o settle de 10 µs
    basta na fiação real, e que as 16 teclas tocam as 16 vozes certas.
-4. **Carga máxima pelo caminho completo.** O motor já aguentou 64 vozes na
+3. **Carga máxima pelo caminho completo.** O motor já aguentou 64 vozes na
    escada da seção 13, mas falta tocar muitas teclas juntas passando pela
    matriz e pelo looper. Se a Bela estiver disponível, fazer um A/B de ouvido
    com ela.
-5. **LEDs.** O firmware já escreve nos pinos finais (GPIO15 modo, GPIO8
+4. **LEDs.** O firmware já escreve nos pinos finais (GPIO15 modo, GPIO8
    looper). Falta ligá-los e ver.
-6. **Placa física** (etapa 7).
+5. **Placa física** (etapa 7).
 
 ## As etapas
 
@@ -250,7 +246,7 @@ Duas consequências de ler por matriz em vez de por pino:
   garante isso. O settle de 10 µs depois de cada coluna é o que cobre a
   subida lenta de uma linha pelo pull-up. Curto demais, uma tecla segurada
   aparece na coluna seguinte (`test_short_settle_ghosts_into_the_next_column`).
-  Os 10 µs só foram validados no modelo. A fiação real é o passo 3 de "O que
+  Os 10 µs só foram validados no modelo. A fiação real é o passo 2 de "O que
   falta".
 
 ### 4. Mapa de pinos
@@ -274,7 +270,7 @@ UART0 (43/44), e o 38 e o 48, porque um dos dois leva o LED RGB do DevKitC-1,
 conforme a revisão da placa.
 
 O PCB mostrou três coisas que o `.ino` não explica, e que precisam ser
-conferidas no instrumento antes de fiar (passo 2 de "O que falta"):
+conferidas no instrumento antes de fiar (passo 1 de "O que falta"):
 - o botão de modo do `.ino` (pino 15) não está ligado na placa, e o único
   conector de botão livre (J6) vai no A0;
 - dezesseis headers (J24–J39) ligam cada coluna ao GND. Se algo estiver
@@ -305,9 +301,9 @@ Na placa, o firmware cresceu em passos pequenos:
    Os dois passaram primeiro só pelo log. Os tempos batidos à mão nessa rodada
    entraram nas decisões do tap-tempo.
 3. **Repeat e looper** (etapa 6): o botão de modo e o pedal agora comandam os
-   dois. Compilado e testado no host, **ainda não tocado na placa**.
+   dois. Testado no host e ouvido na placa (seção 16).
 
-Falta a matriz (passo 3 de "O que falta").
+Falta a matriz (passo 2 de "O que falta").
 
 ### 6. Repeat (tap-tempo) e looper
 
@@ -317,7 +313,9 @@ a implementação:
 - `agbau/src/looper.h`: o looper, com a base e até três overdubs;
 - `agbau/src/performer.h`: o que liga as teclas aos dois e às vozes.
 
-Tudo testado no host (`test_performer`). **Ainda não tocado na placa.**
+Tudo testado no host (`test_performer`) e ouvido na bancada de três vozes,
+modo e pedal (seção 16). Falta tocar com as 16 teclas, quando a matriz
+existir.
 
 A spec reescreve o comportamento do `.ino` a partir de uma regra: **o design
 e a jogabilidade são os do Agbau como foi escrito**, e sai só o que é bug.
