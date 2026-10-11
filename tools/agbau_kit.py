@@ -6,14 +6,20 @@ hold, and report whether it fits.
 The Agbau's samples are float32 mono WAVs at 44.1kHz, written for a Bela that
 had memory to spare. 8,995 MB of int16 does not fit the N16R8's 8 MiB of PSRAM
 (docs/agbau-migration.md, step 0). This tool is the single place where that
-material is converted and cut, so both storage options read identical bits.
+material is converted and cut, so both storage options START from identical
+bits. They do not necessarily END there: M16's Wav::load() fades the first and
+last 10ms of every sample after reading it (CLAUDE.md, "Embedding a sample in
+flash"), and the flash image is never faded. The SD path holds the same bits
+only if those edges are re-read after the load - src/test_agbau_storage.cpp
+does, and compares the two sources sample by sample on the board.
 
 Two outputs, matching the two storage options being measured on the bench:
 
   --sd DIR          16-bit mono WAVs, one per take, for the SD -> PSRAM path.
                     M16's Wav::load() reads 16-bit as-is, so the conversion
                     below is the only one that ever happens - and the boot reads
-                    half the bytes it would for float32.
+                    half the bytes it would for float32. (The only conversion,
+                    not the only change: see the edge fade above.)
   --partition FILE  One binary image for a flash data partition, read in place
                     through esp_partition_mmap(). Format below; parsed and
                     bounds-checked by src/kit_image.h.

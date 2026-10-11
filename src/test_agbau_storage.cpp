@@ -8,17 +8,38 @@
  *  (A) The kit as one image in a flash data partition, mapped in place with
  *      esp_partition_mmap(). Fits uncut. Questions only the board answers:
  *      does a ~9MB mapping succeed next to 8MB of mapped PSRAM, what does the
- *      boot-time CRC cost, and what do sixteen voices cost per block when
- *      every read is a flash cache miss?
+ *      boot-time CRC cost, and what do voices cost per block when every read
+ *      is a flash cache miss?
  *  (B) The trimmed kit as 16-bit WAVs on SD, loaded into PSRAM, the way the
  *      sampler does it. Fits by ~100KB. Questions: how long the boot takes,
  *      and how much PSRAM is really left after.
  *
- * Both run in one boot, A first, if their inputs are there. Then the same
- * sixteen-stream render is timed against each source, and finally audio
- * starts and plays all sixteen voices at once, looping, for as long as it
- * runs - the heaviest load the instrument can produce, through the same 5.8ms
- * ring the sampler uses. Listen for clicks; read the per-second line.
+ * Both run in one boot, A first, if their inputs are there. When both are,
+ * every take present uncut in both is compared sample by sample - the claim
+ * that the two options hold the same bits, measured instead of asserted.
+ *
+ * Then the VOICE LADDER, which needs nobody to press anything. The real
+ * VoiceBank (src/voice.h) is stepped through 1, 2, 4, 8, 12, 16 voices - the
+ * Agbau's maximum - and on past it to 24, 32, 48 and 64, to show the margin.
+ * Every voice loops its take with the real envelope code, so each step costs
+ * what that many sounding voices cost. Each step plays twice:
+ *
+ *   tone     6s of a pure 440Hz tone, with all N voices rendering MUTED. A
+ *            pure tone is the most unforgiving signal there is for a dropout:
+ *            a single lost block is a sharp click. If the render ever starves
+ *            the 5.8ms DMA ring, this is where it is heard.
+ *   voices   6s of the N voices audible, levelled so every step sounds about
+ *            as loud as the last.
+ *
+ * Serial prints the step as it starts and one line per second: blocks/s
+ * (1378 = the I2S clock is in charge), render time against the block period,
+ * and the longest gap between two renders. A gap past the ring's 5.8ms is an
+ * underrun by arithmetic, flagged whether or not it was heard. After the
+ * ladder a table summarises every step; then it starts again.
+ *
+ * SERIAL GOES OUT THE COM CONNECTOR in this env, not the native one: audio is
+ * only reliable with the board on COM (docs/bancada.md, section 11), and a
+ * listening test needs the log on the same cable as the sound.
  *
  * PREPARING THE INPUTS
  *
@@ -33,9 +54,9 @@
  *       Copy sd_kit/*.wav into /agbau/ on the card. The UNTRIMMED set does
  *       not fit, and this sketch will say so rather than truncate anything.
  *
- * This is a measurement, not the firmware: no envelope, no buttons, every
- * voice always on. Results go to docs/bancada.md, and the A/B choice is the
- * user's to make from them.
+ * This is a measurement, not the firmware: no buttons, no kit presets, every
+ * ladder voice looping. Results go to docs/bancada.md, and the A/B choice is
+ * the user's to make from them.
  */
 
 // Same ring as the sampler (src/main.cpp explains the numbers). Duplicated,
@@ -49,7 +70,9 @@
 #include <esp_partition.h>
 #include <spi_flash_mmap.h>
 #include <esp_heap_caps.h>
+#include <esp_timer.h>
 #include <stdarg.h>
+#include <math.h>
 
 static_assert(DMA_BUFFERS * DMA_BUFFER_LENGTH <= 512,
               "I2S ring deeper than 512 frames (~12ms) - the DMA override has "
@@ -57,6 +80,7 @@ static_assert(DMA_BUFFERS * DMA_BUFFER_LENGTH <= 512,
 
 #include "audio_block.h"
 #include "kit_image.h"
+#include "voice.h"
 
 static_assert(AUDIO_BLOCK_FRAMES * 4 <= DMA_BUFFERS * DMA_BUFFER_LENGTH,
               "audio block is more than a quarter of the DMA ring");
@@ -73,12 +97,35 @@ static_assert(AUDIO_BLOCK_FRAMES * 4 <= DMA_BUFFERS * DMA_BUFFER_LENGTH,
 #ifndef SPIKE_SD_MHZ
   #define SPIKE_SD_MHZ 16
 #endif
-// Blocks per render benchmark: ~3s of audio, so each of the sixteen streams
+// Undo M16's 10ms edge fades after each SD load (CLAUDE.md, "Embedding a
+// sample in flash"). ON here, unlike the sampler's opt-in WAV_RESTORE_EDGES:
+// this sketch compares two ways of STORING the kit, and a fade that only one
+// of them applies would be a difference in sound blamed on storage - on a
+// ganza loop it is a ~20ms hole at every wrap.
+#ifndef SPIKE_RESTORE_EDGES
+  #define SPIKE_RESTORE_EDGES 1
+#endif
+// Blocks per storage benchmark: ~3s of audio, so each of the sixteen streams
 // walks ~260KB - far past any cache, which is the point.
 #define SPIKE_BENCH_BLOCKS 4134
-// Sixteen voices at 1/8 each peak at 2.0 if everything lines up; the soft knee
-// takes the rest. Loud enough to hear a click, not a performance level.
+// Raw-stream gain for the storage benchmark; it is never heard.
 #define SPIKE_VOICE_GAIN 0.125f
+
+// --- The ladder -------------------------------------------------------------
+
+#define LADDER_MAX_VOICES 64
+static const uint8_t kLadder[] = {1, 2, 4, 8, 12, 16, 24, 32, 48, 64};
+#define LADDER_STEPS (sizeof(kLadder) / sizeof(kLadder[0]))
+#define LADDER_PHASE_MS 6000
+// The ring holds 4 x 64 frames = 5.8ms. A gap between two renders longer than
+// that has emptied it: an underrun by arithmetic. Past 4ms it is flagged as
+// close.
+#define RING_US   ((uint32_t)(1000000ULL * DMA_BUFFERS * DMA_BUFFER_LENGTH / SAMPLE_RATE))
+#define CLOSE_US  4000
+// Canary tone: 440Hz at -12dBFS, from a table so the audio task does no sinf().
+#define TONE_HZ   440.0f
+#define TONE_AMP  0.25f
+#define TONE_LEN  1024
 
 // --- The kit -------------------------------------------------------------
 
@@ -91,7 +138,7 @@ static const char* const kTakes[TAKE_COUNT] = {
   "p5.3.1", "p5.3.2", "p5.3.3", "p6.3.1", "p6.3.2", "p6.3.3", "p7.1", "p8.3.1",
 };
 
-// One take per voice, so the render has all sixteen voices sounding.
+// One take per Agbau voice; the ladder cycles through these.
 static const char* const kVoiceTakes[VOICE_COUNT] = {
   "b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8",
   "p1.3.1", "p2.2.1", "p3.1", "p4.3.1", "p5.3.1", "p6.3.1", "p7.1", "p8.3.1",
@@ -109,11 +156,10 @@ struct TakeStream {
   uint32_t       pos    = 0;
 };
 
-static KitImage gKit;                       // option A: pointers into flash
-static TakeStream   gFlash[VOICE_COUNT];
-static TakeStream   gPsram[VOICE_COUNT];
-static bool     gHaveFlash = false, gHavePsram = false;
-static TakeStream*  gPlay = nullptr;            // which set audioUpdate() reads
+static KitImage   gKit;                       // option A: pointers into flash
+static TakeStream gFlash[VOICE_COUNT];
+static TakeStream gPsram[VOICE_COUNT];
+static bool       gHaveFlash = false, gHavePsram = false;
 static const char* gPlayName = "none";
 
 static SdFs sd;
@@ -121,14 +167,26 @@ static Wav  gWav;
 struct Loaded { const int16_t* data; uint32_t frames; };
 static Loaded gLoaded[TAKE_COUNT];
 
+// The ladder's voices. Audio task renders them; loop() only posts to them.
+static VoiceBank<LADDER_MAX_VOICES> gBank;
+static float gTone[TONE_LEN];
+static uint32_t gTonePhase = 0;
+static const uint32_t kToneStep =
+    (uint32_t)(TONE_HZ / SAMPLE_RATE * 4294967296.0);
+
+// Set by loop(), read by the audio task once per block.
+static volatile float gVoiceMix = 0.0f;      // 0 = voices rendered but muted
+static volatile float gToneMix  = 0.0f;
+
 // Written by the audio task, read by loop(). Same reasoning as DEBUG_ENGINE in
 // main.cpp: a torn read costs one wrong line, a lock would cost the audio.
 static volatile uint32_t gBlocks = 0, gRenderSum = 0, gRenderWorst = 0;
+static volatile uint32_t gGapWorst = 0;
 static volatile int32_t  gPeak = 0;
 
-// Every result line is also kept, and reprinted every 15s from loop(): USB CDC
-// drops whatever is printed before the host opens the port, and the boot is
-// exactly when the numbers that matter are printed.
+// Every boot result line is also kept and reprinted at the start of each
+// ladder pass: on whichever connector, whatever is printed before the host
+// opens the port is lost, and the boot is when the numbers that matter print.
 static char   gSummary[3072];
 static size_t gSummaryLen = 0;
 
@@ -229,6 +287,18 @@ static bool mapFlashKit() {
 
 // --- (B) SD -> PSRAM --------------------------------------------------------
 
+// Re-read the 20ms at each end that Wav::load() just faded - the same repair
+// as restoreEdges() in main.cpp, which explains the margin. Every take here is
+// loaded whole into a buffer of exactly its size, so both ends are the file's
+// own and both are restored.
+static bool restoreEdges(int16_t* buf, uint32_t frames) {
+  uint32_t n = SAMPLE_RATE / 50;
+  if (n > frames) n = frames;
+  bool ok = gWav.readFrames(0, n, buf);
+  ok = gWav.readFrames(frames - n, n, buf + (frames - n)) && ok;
+  return ok;
+}
+
 static bool loadSdKit() {
   size_t freeBefore    = ESP.getFreePsram();
   size_t largestBefore = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
@@ -274,6 +344,8 @@ static bool loadSdKit() {
   }
 
   t0 = millis();
+  uint32_t tEdges = 0;
+  int edgeFailures = 0;
   size_t off = 0;
   for (int i = 0; i < TAKE_COUNT; i++) {
     snprintf(path, sizeof(path), "/agbau/%s.wav", kTakes[i]);
@@ -288,6 +360,11 @@ static bool loadSdKit() {
            gWav.getChannels(), (unsigned long)gWav.getSampleRate());
       return false;
     }
+#if SPIKE_RESTORE_EDGES
+    uint32_t te = millis();
+    if (!restoreEdges(slice, frames)) edgeFailures++;
+    tEdges += millis() - te;
+#endif
     gLoaded[i] = {slice, frames};
     off += (bytes[i] + 3) & ~3u;
   }
@@ -295,6 +372,12 @@ static bool loadSdKit() {
   note("B: %d takes, %u bytes: mount %lu ms + load %lu ms at %d MHz (%.2f MB/s)\n",
        TAKE_COUNT, (unsigned)total, (unsigned long)tMount, (unsigned long)tLoad,
        SPIKE_SD_MHZ, tLoad ? (double)total / 1000.0 / tLoad : 0.0);
+#if SPIKE_RESTORE_EDGES
+  note("B: M16's edge fades undone: %lu ms of the load, %d failed re-reads\n",
+       (unsigned long)tEdges, edgeFailures);
+#else
+  note("B: M16's edge fades LEFT IN (SPIKE_RESTORE_EDGES=0)\n");
+#endif
   note("B: PSRAM free after %u, largest block %u\n",
        (unsigned)ESP.getFreePsram(),
        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
@@ -310,7 +393,35 @@ static bool loadSdKit() {
   return true;
 }
 
-// --- The render, same shape as the firmware's: voice-outer, frame-inner ----
+// Every take present in both, at the same length, compared sample by sample.
+// Takes the SD set trimmed have different lengths and are skipped - their
+// content differs by design.
+static void compareSources() {
+  int same = 0, differ = 0, trimmed = 0;
+  for (int i = 0; i < TAKE_COUNT; i++) {
+    const KitTake* a = gKit.find(kTakes[i]);
+    if (!a) continue;
+    if (a->frames != gLoaded[i].frames) { trimmed++; continue; }
+    uint32_t diffs = 0, first = 0;
+    for (uint32_t k = 0; k < a->frames; k++) {
+      if (a->data[k] != gLoaded[i].data[k]) {
+        if (diffs++ == 0) first = k;
+      }
+    }
+    if (diffs == 0) {
+      same++;
+    } else {
+      differ++;
+      note("A/B: %s differs in %lu of %lu samples, first at frame %lu\n",
+           kTakes[i], (unsigned long)diffs, (unsigned long)a->frames,
+           (unsigned long)first);
+    }
+  }
+  note("A/B: %d takes compared sample by sample: %d identical, %d different; "
+       "%d trimmed on SD, not comparable\n", same + differ, same, differ, trimmed);
+}
+
+// --- Storage benchmark: raw streams, no envelope -----------------------------
 
 static void renderStreams(TakeStream* s, AudioBlock& b) {
   audioBlockSilence(b);
@@ -345,9 +456,65 @@ static void benchRender(const char* label, TakeStream* s) {
        (unsigned long)period);
 }
 
+// --- Ladder bookkeeping (loop() only) ---------------------------------------
+
+struct PhaseResult {
+  float    renderAvgPct, renderWorstPct;
+  uint32_t gapWorstUs, blocksMin;
+};
+static PhaseResult gResults[LADDER_STEPS][2];
+static uint8_t  gStep = 0, gPhase = 0;          // phase 0 = tone, 1 = voices
+static uint8_t  gActive = 0;                    // voices note-on'd so far
+static uint32_t gPhaseStart = 0;
+static PhaseResult gAcc;
+
+static void setVoices(uint8_t n) {
+  for (uint8_t v = gActive; v < n; v++) gBank.post(v, true);
+  for (uint8_t v = n; v < gActive; v++) gBank.post(v, false);
+  gActive = n;
+}
+
+static void startPhase(uint32_t now) {
+  uint8_t n = kLadder[gStep];
+  if (gPhase == 0) {
+    setVoices(n);
+    gVoiceMix = 0.0f;
+    gToneMix  = 1.0f;
+    Serial.printf("\n=== %u voice%s: %d s of pure tone, the voices rendering muted ===\n",
+                  n, n == 1 ? "" : "s", LADDER_PHASE_MS / 1000);
+  } else {
+    // Each voice is a take at half gain (VOICE_GAIN); N uncorrelated takes
+    // add as sqrt(N). Keep every step at about one voice's loudness.
+    gVoiceMix = 1.2f / sqrtf((float)n);
+    gToneMix  = 0.0f;
+    Serial.printf("=== %u voice%s: %d s of the voices themselves ===\n",
+                  n, n == 1 ? "" : "s", LADDER_PHASE_MS / 1000);
+  }
+  gPhaseStart = now;
+  gAcc = PhaseResult{0.0f, 0.0f, 0, 0xFFFFFFFF};
+}
+
+static void printLadderTable() {
+  Serial.printf("\n--- ladder summary (%s; ring %lu us; block period %lu cycles) ---\n",
+                gPlayName, (unsigned long)RING_US, (unsigned long)blockPeriodCycles());
+  Serial.printf("voices | phase  | render avg  worst | worst gap | min blocks/s | verdict\n");
+  for (uint8_t s = 0; s < LADDER_STEPS; s++) {
+    for (uint8_t ph = 0; ph < 2; ph++) {
+      const PhaseResult& r = gResults[s][ph];
+      const char* v = r.gapWorstUs > RING_US ? "UNDERRUN" :
+                      (r.gapWorstUs > CLOSE_US || r.blocksMin < 1370) ? "close" : "ok";
+      Serial.printf("%6u | %-6s | %8.1f%% %5.1f%% | %6lu us | %12lu | %s\n",
+                    kLadder[s], ph == 0 ? "tone" : "voices", r.renderAvgPct,
+                    r.renderWorstPct, (unsigned long)r.gapWorstUs,
+                    (unsigned long)r.blocksMin, v);
+    }
+  }
+  Serial.printf("(the gaps include the first second of each phase, when voices\n"
+                " were just switched on - a spike only there is a start-up cost)\n");
+}
+
 void setup() {
   Serial.begin(115200);
-  // A measurement nobody sees is not one. Wait for the host, but not forever.
   uint32_t t = millis();
   while (!Serial && millis() - t < 3000) delay(10);
   delay(200);
@@ -362,62 +529,119 @@ void setup() {
 
   gHaveFlash = mapFlashKit();
   gHavePsram = loadSdKit();
+  if (gHaveFlash && gHavePsram) compareSources();
 
   if (gHaveFlash) benchRender("A flash", gFlash);
   if (gHavePsram) benchRender("B psram", gPsram);
 
+  TakeStream* src = nullptr;
   if (gHaveFlash && !(SPIKE_PLAY_PSRAM && gHavePsram)) {
-    gPlay = gFlash;  gPlayName = "flash";
+    src = gFlash;  gPlayName = "flash";
   } else if (gHavePsram) {
-    gPlay = gPsram;  gPlayName = "psram";
+    src = gPsram;  gPlayName = "psram";
   }
-  note("Playing: %s. Internal heap free %u.\n", gPlayName,
-       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+  note("Ladder plays from: %s%s\n", gPlayName,
+       src ? "" : " - no kit, so only the tone is real; voice steps are silent");
+
+  // Ladder voices: every one loops its take with the real envelope, so each
+  // costs what a held ganza costs - the most expensive kind of Agbau voice.
+  const VoiceConfig looping{0.01f, 0.0f, 1.0f, 0.1f, true, true};
+  for (int v = 0; v < LADDER_MAX_VOICES; v++) {
+    gBank.voices[v].configure(looping, SAMPLE_RATE);
+    if (src) {
+      const TakeStream& s = src[v % VOICE_COUNT];
+      gBank.voices[v].addTake(s.data, s.frames);
+    }
+  }
+  for (int i = 0; i < TONE_LEN; i++)
+    gTone[i] = TONE_AMP * sinf(6.28318530718f * i / TONE_LEN);
+
+  note("Internal heap free %u. Ring %lu us.\n",
+       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned long)RING_US);
 
   seti2sPins(16, 17, 18, -1);
   setIsDualCore(false);       // one task, one static block - see main.cpp
   audioStart();
+
+  Serial.print("\n--- boot summary ---\n");
+  Serial.print(gSummary);
+  startPhase(millis());
 }
 
 void loop() {
-  static uint32_t lastReport = 0, lastSummary = 0, lastBlocks = 0;
+  static uint32_t lastReport = 0, lastBlocks = 0;
   uint32_t now = millis();
+
   if (now - lastReport >= 1000) {
     uint32_t blocks = gBlocks, sum = gRenderSum, worst = gRenderWorst;
+    uint32_t gap = gGapWorst;
     int32_t  peak = gPeak;
     gRenderSum = 0;
     gRenderWorst = 0;
+    gGapWorst = 0;
     gPeak = 0;
     uint32_t n = blocks - lastBlocks;
     uint32_t period = blockPeriodCycles();
-    Serial.printf("LIVE %s  blocks/s %lu  render avg %lu worst %lu cycles "
-                  "(%.1f%% worst)  peak %ld\n", gPlayName, (unsigned long)n,
-                  (unsigned long)(n ? sum / n : 0), (unsigned long)worst,
-                  100.0 * worst / period, (long)peak);
+    float avgPct = n ? 100.0f * (sum / n) / period : 0.0f;
+    float worstPct = 100.0f * worst / period;
+    const char* flag = gap > RING_US ? "  <-- UNDERRUN" :
+                       (gap > CLOSE_US || n < 1370) ? "  <-- close" : "";
+    Serial.printf("  %2u voices %-6s  blocks/s %lu  render avg %.1f%% worst %.1f%%"
+                  "  gap %lu us  peak %ld%s\n", kLadder[gStep],
+                  gPhase == 0 ? "tone" : "voices", (unsigned long)n, avgPct,
+                  worstPct, (unsigned long)gap, (long)peak, flag);
+    if (lastReport != 0) {
+      if (avgPct > gAcc.renderAvgPct) gAcc.renderAvgPct = avgPct;
+      if (worstPct > gAcc.renderWorstPct) gAcc.renderWorstPct = worstPct;
+      if (gap > gAcc.gapWorstUs) gAcc.gapWorstUs = gap;
+      if (n < gAcc.blocksMin) gAcc.blocksMin = n;
+    }
     lastBlocks = blocks;
     lastReport = now;
   }
-  if (now - lastSummary >= 15000) {
-    Serial.print("--- boot summary ---\n");
-    Serial.print(gSummary);
-    lastSummary = now;
+
+  if (now - gPhaseStart >= LADDER_PHASE_MS) {
+    gResults[gStep][gPhase] = gAcc;
+    if (++gPhase == 2) {
+      gPhase = 0;
+      if (++gStep == LADDER_STEPS) {
+        printLadderTable();
+        gStep = 0;
+        Serial.print("\n--- boot summary ---\n");
+        Serial.print(gSummary);
+      }
+    }
+    startPhase(now);
   }
   delay(5);
 }
 
 void audioUpdate() {
   static AudioBlock blk;   // one task only - setIsDualCore(false) above
+  static int64_t lastStart = 0;
+
+  int64_t start = esp_timer_get_time();
+  if (lastStart != 0) {
+    uint32_t gap = (uint32_t)(start - lastStart);
+    if (gap > gGapWorst) gGapWorst = gap;
+  }
+  lastStart = start;
 
   uint32_t c0 = ESP.getCycleCount();
-  if (gPlay) renderStreams(gPlay, blk);
-  else       audioBlockSilence(blk);
+  audioBlockSilence(blk);
+  gBank.render(blk);
   uint32_t c = ESP.getCycleCount() - c0;
   gRenderSum = gRenderSum + c;
   if (c > gRenderWorst) gRenderWorst = c;
 
+  // The voices are always rendered; in a tone phase they are multiplied by
+  // zero here, after the cost has been paid and measured.
+  const float vmix = gVoiceMix, tmix = gToneMix;
   for (int n = 0; n < AUDIO_BLOCK_FRAMES; n++) {
-    int16_t outL = audioToI16(audioSoftClip(blk.l[n]));
-    int16_t outR = audioToI16(audioSoftClip(blk.r[n]));
+    float tone = tmix * gTone[gTonePhase >> (32 - 10)];
+    gTonePhase += kToneStep;
+    int16_t outL = audioToI16(audioSoftClip(blk.l[n] * vmix + tone));
+    int16_t outR = audioToI16(audioSoftClip(blk.r[n] * vmix + tone));
     int32_t mag = outL < 0 ? -(int32_t)outL : (int32_t)outL;
     if (mag > gPeak) gPeak = mag;
     audioBlockWrite(outL, outR);

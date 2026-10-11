@@ -92,6 +92,24 @@ em `tools/agbau_kit.py`, com o mesmo arredondamento de `audioToI16()`. O M16
 também converte float32 ao carregar, mas truncando com ×32767; converter antes
 dá um ponto único de conversão e faz o boot ler metade dos bytes.
 
+A conversão é única; o resultado na memória, não necessariamente. Dois
+comportamentos do `Wav::load()` do M16 só afetam a opção B:
+
+- **Fade nas pontas.** Depois de ler, o `load()` aplica 10 ms de rampa no
+  início e no fim de toda sample (ver CLAUDE.md, "Embedding a sample in
+  flash"). A imagem na flash nunca passa por isso. Num ganzá em loop, as duas
+  rampas viram um buraco de ~20 ms a cada volta; numa percussão, amaciam o
+  ataque por cima dos 10 ms de attack do envelope. O spike desfaz o fade
+  relendo as pontas (`SPIKE_RESTORE_EDGES`, ligado), e compara na placa, amostra
+  por amostra, as takes que existem sem corte nas duas fontes. O firmware da
+  etapa 5, se ficar com a opção B, precisa fazer o mesmo.
+- **Truncamento silencioso.** Cada `load()` aceita no máximo 90% da PSRAM ainda
+  livre e corta o arquivo além disso, com uma linha na serial e retorno de
+  sucesso. Com ~100 KB de folga, as últimas takes sairiam cortadas. O spike
+  evita isso alocando um bloco único do tamanho exato do kit e entregando uma
+  fatia a cada take (`setExternalBuffer()`); o firmware da opção B teria que
+  fazer o mesmo.
+
 ### 1. Envelope ADSR
 
 Hoje `src/audio_block.h` tem o joelho suave mas nenhum envelope de amplitude.
