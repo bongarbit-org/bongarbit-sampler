@@ -242,6 +242,47 @@ eventos enche a camada nova em menos de uma volta. Com o bug 4 corrigido e
 1024 posições, o overdub vai até o início do loop. O comportamento pretendido
 volta, mas é diferente do que se ouvia.
 
+**Como se toca com essa regra** (ouvido na placa em 11/10/2026): aberto meio
+segundo antes da piscada branca do LED da bancada, o overdub grava só esse
+meio segundo, no fim do loop. Para gravar a volta inteira, pisa-se logo
+**depois** da piscada.
+
+#### Se um dia for preciso trocar a regra do overdub
+
+Ficou decidido manter a regra (a), mas registrar as outras duas, para que a
+troca não precise ser redescoberta. As três foram discutidas na decisão 7.
+
+| | Regra | Onde fecha |
+|---|---|---|
+| **(a)** atual | a do `.ino` | na próxima passagem pelo começo do loop |
+| **(b)** | uma volta inteira | ao voltar ao ponto em que abriu |
+| **(c)** | como a maioria dos pedais de loop | só no pedal (ou com a camada cheia) |
+
+Onde mexer: `Looper::advance()` em `agbau/src/looper.h`, na linha que fecha o
+overdub quando `_wrapped`. Os testes que fixam a regra (a), e que mudam junto,
+são `test_overdub_closes_at_the_loop_start`,
+`test_overdub_does_not_record_the_playback` e `test_a_fourth_overdub_is_refused`
+(os dois últimos contam com o fechamento automático a cada volta).
+
+Cada alternativa tem uma armadilha que a (a) não tem, porque a (a) é a única
+em que uma camada nunca passa pelo começo do loop enquanto grava:
+
+- **(b)** Os eventos de depois do começo do loop têm posição *menor* que os de
+  antes, e a camada deixa de estar em ordem de posição, o que a reprodução
+  pressupõe (um cursor por camada, não uma busca). São duas sequências já
+  ordenadas, então basta girá-las no fechamento (`std::rotate`, sem alocar,
+  O(n)). Fechar "ao voltar ao ponto em que abriu" também exige guardar essa
+  posição. O note-off de fechamento vai no frame antes dela, pelo mesmo motivo
+  do frame 0 na primeira gravação.
+- **(c)** Duas mudanças maiores. A primeira: depois de uma volta, o que foi
+  gravado na volta anterior *precisa tocar* enquanto a camada ainda grava,
+  senão quem toca não ouve o próprio overdub até fechar. Isso derruba a regra
+  "a camada sendo gravada não toca até fechar", e com ela a garantia de que
+  nada toca duas vezes no bloco em que foi gravado. A segunda: várias voltas
+  se intercalam na mesma camada, e reordenar 1024 eventos no fechamento, na
+  task de áudio, pode passar do bloco. O mais simples é cada volta virar uma
+  camada nova, o que muda o significado de "três overdubs".
+
 **Notas abertas ao fechar uma camada.** Uma tecla ainda apertada quando a
 gravação ou o overdub fecha tem o note-on gravado e não o note-off. Tocado em
 loop, um ganzá ficaria ligado para sempre. Ao fechar, cada voz ligada nessa
@@ -341,9 +382,10 @@ pedal no GPIO39. Com eles se ouve todo o repeat:
 - os bugs 5 e 7 de propósito: segurar o p3, trocar de modo, soltar.
 
 Os LEDs não estão ligados. O firmware já escreve nos pinos finais deles
-(GPIO15 modo, GPIO8 looper) e espelha os dois no LED RGB da placa (modo em
-azul, looper em vermelho, os dois juntos em magenta), e cada mudança de estado do repeat e do looper
-sai na serial (`REPEAT ...`, `LOOP ...`). Para o looper, a
+(GPIO15 modo, GPIO8 looper). Enquanto eles não estão ligados, o LED RGB da
+placa mostra o looper pela cor e o repeat pelo pulso. É um indicador só de
+bancada, fora desta spec, descrito no README do Agbau. Cada mudança de estado
+do repeat e do looper sai na serial (`REPEAT ...`, `LOOP ...`). Para o looper, a
 bancada tem desde 11/10/2026 um quinto botão no **GPIO39**, ao GND, que é o
 pino do pedal no mapa final ([circuit.md](circuit.md)). Assim nada muda de
 pino quando a bancada virar o instrumento. Ele é um `TriggerInput` próprio,

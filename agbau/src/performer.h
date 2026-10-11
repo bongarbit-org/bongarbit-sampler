@@ -103,6 +103,12 @@ class Performer {
   uint8_t       division() const { return _repeat.division(); }
   const Looper& looper() const { return _loop; }
   bool          modeLed() const { return _repeat.led(_now, _tempo.lastTap()); }
+  // The first quarter of every beat while repeat is on: a metronome's tick,
+  // for an indicator that has one LED to show both repeat and looper on.
+  bool          beatAccent() const {
+    const uint32_t b = _tempo.beat();
+    return _repeat.on() && (uint32_t)(_now - _tempo.lastTap()) % b < b / 4;
+  }
   bool          looperLed() const { return _loop.led(); }
   uint32_t      now() const { return _now; }
   uint32_t      dropped() const { return _keys.dropped(); }

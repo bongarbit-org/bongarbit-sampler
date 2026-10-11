@@ -22,10 +22,10 @@
  * already on its pin of the final map: record, play, overdub, hold 1s to
  * erase. Both as agbau/docs/looper.md specifies; with one bass on the bench,
  * repeat has two divisions to choose from - 4 per bar until b1 is struck in
- * repeat, 2 after. The board's own RGB LED shows both LEDs' states (mode in
- * blue, looper in red), and the LEDs are also driven on their final pins (GPIO15 mode,
- * GPIO8 looper) whether or not anything is wired there, and every change of
- * state is logged.
+ * repeat, 2 after. Until the two LEDs are wired, the board's own RGB LED
+ * shows repeat and looper together (STATUS_RGB below); the LEDs are also
+ * driven on their final pins (GPIO15 mode, GPIO8 looper) whether or not
+ * anything is wired there, and every change of state is logged.
  *
  * The kit is read in place from the flash "samples" partition (option A of
  * step 0, shared/docs/bancada.md section 13): written once with
@@ -104,16 +104,40 @@ static_assert(MODE_ROW == VOICE_KEYS && VOICE_KEYS < BUTTONS,
 #define MODE_LED_PIN   15
 #define LOOPER_LED_PIN 8
 
-// Until they are wired, the DevKitC-1's own RGB LED (a WS2812) shows the
-// same two states, one colour each: mode blue, looper red, both magenta.
+// Until they are wired, the DevKitC-1's own RGB LED (a WS2812) shows both
+// states at once - a bench indicator, not part of agbau/docs/looper.md. It
+// used to give each state a colour of its own, mode blue and looper red,
+// each blinking to its own rhythm; together they mixed into violet and beat
+// against each other, unreadable. Now each state owns one channel of the
+// LED instead of one colour:
+//
+//   colour = the looper, steady: off empty, red recording, green playing,
+//            magenta overdubbing. Repeat alone, with the looper empty, is
+//            blue. One colour at a time, so nothing mixes.
+//   pulse  = repeat: bright for the first quarter of every beat, dim for the
+//            rest - never off, so the colour stays readable.
+//   white  = a short flash each time the loop comes round to its start.
+//
+// The looper's two blinks per lap are left out here; the colour already says
+// it is playing, and a second rhythm is what made the old one chaotic.
+//
 // It sits on GPIO48 or GPIO38 depending on the board revision; 48 is the
 // core's default (RGB_BUILTIN). If it stays dark, try 38. Neither pin is
 // used by the Agbau's final map for exactly this reason.
 #ifndef STATUS_RGB_PIN
   #define STATUS_RGB_PIN 48
 #endif
-// Out of 255. The LED sits a few cm from the eye on a bench; full is glaring.
-#define STATUS_RGB_LEVEL 32
+// Out of 255. The LED sits a few cm from the eye on a bench: 32 was still
+// painful, so 8. A WS2812's steps are coarse this low, which is why the dim
+// level is a ratio of this and not a number of its own; below ~4 the dim
+// step rounds to nothing and repeat would blink off instead of pulsing.
+#ifndef STATUS_RGB_LEVEL
+  #define STATUS_RGB_LEVEL 8
+#endif
+// Between repeat's beats: a quarter of the level, dim but plainly the colour.
+#define STATUS_RGB_DIM   (STATUS_RGB_LEVEL / 4 > 0 ? STATUS_RGB_LEVEL / 4 : 1)
+// The loop-start flash, in ms.
+#define STATUS_RGB_LAP_MS 40
 
 struct DirectButtons {
   void driveColumn(uint8_t) {}
@@ -296,16 +320,31 @@ void loop() {
   const bool modeLit = gPerf.modeLed(), looperLit = gPerf.looperLed();
   digitalWrite(MODE_LED_PIN, modeLit ? HIGH : LOW);
   digitalWrite(LOOPER_LED_PIN, looperLit ? HIGH : LOW);
-  // The RGB LED only on a change: each write is a blocking ~30us RMT
-  // transfer, a stall in the key scan, so it happens a few times a second
-  // at most (the beat and the loop's quarters), never every pass.
+  // The RGB LED (see STATUS_RGB_PIN), only on a change: each write is a
+  // blocking ~30us RMT transfer, a stall in the key scan, so it happens a few
+  // times a second at most (the beat and the lap), never every pass.
   {
-    static int8_t shown = -1;
-    const int8_t now = (modeLit ? 1 : 0) | (looperLit ? 2 : 0);
-    if (now != shown) {
-      rgbLedWrite(STATUS_RGB_PIN, looperLit ? STATUS_RGB_LEVEL : 0, 0,
-                  modeLit ? STATUS_RGB_LEVEL : 0);
-      shown = now;
+    static uint32_t shown = 0xFFFFFFFFu;
+    const Looper& lp = gPerf.looper();
+    const LooperState st = lp.state();
+    const bool rep = gPerf.repeatOn();
+    // Colour: which of R, G, B are on.
+    uint8_t r = 0, g = 0, b = 0;
+    switch (st) {
+      case LOOPER_EMPTY:     b = rep; break;
+      case LOOPER_RECORDING: r = 1; break;
+      case LOOPER_PLAYING:   g = 1; break;
+      case LOOPER_OVERDUB:   r = 1; b = 1; break;
+    }
+    const uint8_t level = !rep || gPerf.beatAccent() ? STATUS_RGB_LEVEL : STATUS_RGB_DIM;
+    const bool lap = (st == LOOPER_PLAYING || st == LOOPER_OVERDUB) &&
+                     lp.position() < (uint32_t)(SAMPLE_RATE * STATUS_RGB_LAP_MS / 1000);
+    if (lap) r = g = b = 1;
+    const uint8_t lv = lap ? STATUS_RGB_LEVEL : level;
+    const uint32_t want = (uint32_t)(r * lv) << 16 | (uint32_t)(g * lv) << 8 | (b * lv);
+    if (want != shown) {
+      rgbLedWrite(STATUS_RGB_PIN, r * lv, g * lv, b * lv);
+      shown = want;
     }
   }
 

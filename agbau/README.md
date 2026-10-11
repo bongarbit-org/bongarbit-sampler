@@ -65,10 +65,19 @@ O comportamento completo está em [docs/looper.md](docs/looper.md). Os LEDs
 saem nos GPIO 15 (modo) e 8 (looper), e cada mudança de estado aparece no log.
 
 Enquanto esses LEDs não estão ligados, o **LED RGB da própria placa** mostra
-os mesmos dois estados: **azul** é o LED de modo (pisca no tempo do repeat),
-**vermelho** é o do looper (aceso gravando, piscando duas vezes por volta
-tocando), e **magenta** são os dois acesos ao mesmo tempo. Ele fica no GPIO 48
-ou no 38, conforme a revisão do DevKitC-1. O firmware usa o 48; se o LED não
+os dois estados de uma vez:
+
+- **A cor é o looper, fixa:** apagado (vazio), **vermelho** (gravando),
+  **verde** (tocando) e **magenta** (overdub). Com o looper vazio e o repeat
+  ligado, a cor é **azul**.
+- **O repeat faz a cor pulsar** no tempo: forte no primeiro quarto de cada
+  tempo, fraca no resto. O LED nunca apaga, então a cor continua legível.
+- **Um lampejo branco** (40 ms) marca cada vez que o loop volta ao começo.
+
+É um indicador de bancada, fora da spec. O brilho é baixo de propósito
+(`STATUS_RGB_LEVEL`, 8 de 255) e dá para mudar com
+`-DSTATUS_RGB_LEVEL=...`. Ele fica no GPIO 48 ou no 38, conforme a revisão do
+DevKitC-1. O firmware usa o 48; se o LED não
 acender, troque `STATUS_RGB_PIN` para 38 no topo de [src/main.cpp](src/main.cpp).
 
 ## O spike de armazenamento

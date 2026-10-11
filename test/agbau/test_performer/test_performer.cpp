@@ -196,6 +196,18 @@ void test_mode_led_lights_the_first_half_of_each_beat(void) {
   TEST_ASSERT_TRUE(r->p.modeLed());
 }
 
+void test_beat_accent_is_the_first_quarter_of_each_beat(void) {
+  auto r = rig({1});
+  TEST_ASSERT_FALSE(r->p.beatAccent());              // no repeat, no tick
+  uint32_t t = enterRepeat(*r, 0);
+  r->runTo(t + 100);
+  TEST_ASSERT_TRUE(r->p.beatAccent());
+  r->runTo(t + 22050 / 4 + 100);
+  TEST_ASSERT_FALSE(r->p.beatAccent());
+  r->runTo(t + 22050 + 100);
+  TEST_ASSERT_TRUE(r->p.beatAccent());
+}
+
 // ---- The .ino's bugs -------------------------------------------------------
 
 void test_tempo_at_120_is_22050_frames(void) {
@@ -511,6 +523,7 @@ int main(int, char**) {
   RUN_TEST(test_bass_in_note_mode_sounds);
   RUN_TEST(test_holding_mode_one_second_leaves_repeat);
   RUN_TEST(test_mode_led_lights_the_first_half_of_each_beat);
+  RUN_TEST(test_beat_accent_is_the_first_quarter_of_each_beat);
 
   RUN_TEST(test_tempo_at_120_is_22050_frames);
   RUN_TEST(test_a_long_gap_starts_over_instead_of_dividing_by_zero);

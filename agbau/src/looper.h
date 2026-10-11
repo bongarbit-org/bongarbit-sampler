@@ -96,7 +96,11 @@ class Looper {
     _wrapped = sum >= _len;
     _pos = (uint32_t)(sum % _len);
     // The .ino meant this (agbau.ino:326) but tested for an exact
-    // millisecond, which it usually hit and sometimes skipped.
+    // millisecond, which it usually hit and sometimes skipped. This line IS
+    // the overdub rule - rule (a) of agbau/docs/looper.md, kept on purpose.
+    // The two alternatives, and what each breaks here (layers in position
+    // order; a layer that does not play while it records), are written down
+    // there under "Se um dia for preciso trocar a regra do overdub".
     if (_state == LOOPER_OVERDUB && _wrapped) closeOverdub(_len - 1);
   }
 

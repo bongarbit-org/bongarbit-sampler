@@ -1484,3 +1484,9 @@ então a divisão vai de 4 para 2 por compasso e não volta. A divisão sobreviv
 | Bug 7 (ganzá atravessando a troca de modo) | **ouvido na placa** |
 | Repeat e looper com as 16 teclas | **não testado**: falta a matriz |
 | LEDs | **não testados**: nada ligado nos GPIO 15 e 8 |
+| LED RGB da placa, como indicador de bancada | **visto na placa** no esquema novo: cor = looper, pulso = repeat, lampejo branco no começo do loop, brilho 8/255. O esquema anterior (uma cor por estado, cada uma no seu ritmo) misturava cores e ficou ilegível |
+
+Depois disso ficou claro um ponto da regra do overdub (decisão 7, a do
+`.ino`): aberto meio segundo antes do começo do loop, ele grava só esse meio
+segundo. A regra foi mantida, e as alternativas ficaram registradas no
+`looper.md` para uma troca futura.
