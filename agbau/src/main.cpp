@@ -1,11 +1,12 @@
 /*
  * agbau - the Agbau's voices on the ESP32-S3, first bring-up.
  *
- * agbau/docs/migration.md, step 5, cut down on purpose: no 4x4 matrix yet,
- * no repeat mode, no looper. Four buttons on the pins the sampler bench is
- * already wired with (GPIO 4, 5, 6, 7, each to GND), each playing one Agbau
- * voice, so the three ways an Agbau voice behaves can be heard and checked
- * before anything about the instrument's layout is:
+ * agbau/docs/migration.md, step 5, cut down on purpose: no 4x4 matrix yet.
+ * Four buttons on the pins the sampler bench is already wired with (GPIO 4,
+ * 5, 6, 7, each to GND) and a fifth on GPIO39. The first three each play
+ * one Agbau voice, one of each of the three ways an Agbau voice behaves, so
+ * they can be heard and checked before anything about the instrument's
+ * layout is:
  *
  *   bass        sounds while held, falls away over 1s when released
  *   percussion  the 3s decay is the whole hit; releasing changes nothing;
@@ -14,6 +15,16 @@
  *
  * kButtonVoice below says which voice each button plays. Change the numbers,
  * not the wiring: voice i is the Bela's samplers[i] (agbau/src/agbau_kit.h).
+ *
+ * The fourth, GPIO7, is the mode button, standing in for the instrument's
+ * (GPIO40 on the final map, agbau/docs/circuit.md): tap it for tempo and
+ * repeat mode, hold it 1s to leave. The fifth, GPIO39, is the looper pedal,
+ * already on its pin of the final map: record, play, overdub, hold 1s to
+ * erase. Both as agbau/docs/looper.md specifies; with one bass on the bench,
+ * repeat has two divisions to choose from - 4 per bar until b1 is struck in
+ * repeat, 2 after. The LEDs are driven on their final pins (GPIO15 mode,
+ * GPIO8 looper) whether or not anything is wired there, and every change of
+ * state is logged.
  *
  * The kit is read in place from the flash "samples" partition (option A of
  * step 0, shared/docs/bancada.md section 13): written once with
@@ -26,8 +37,9 @@
  * Everything that makes sound is a host-tested header: the envelope
  * (envelope.h), the voices and the queue that is the only path from loop()
  * to them (voice.h, note_queue.h), the kit table (agbau_kit.h), the image
- * parser (kit_image.h) and the button conditioning (key_matrix.h over
- * trigger_input.h). This file only wires them to pins, flash and M16.
+ * parser (kit_image.h), the button conditioning (key_matrix.h over
+ * trigger_input.h) and the repeat and looper (performer.h over tap_tempo.h
+ * and looper.h). This file only wires them to pins, flash and M16.
  */
 
 // First, because it also sets the I2S ring (5.8ms, the sampler's) and M16
@@ -43,6 +55,7 @@
 #include "voice.h"
 #include "agbau_kit.h"
 #include "key_matrix.h"
+#include "performer.h"
 
 // --- Diagnostics -------------------------------------------------------------
 // Both ON by default here, unlike the sampler, and on purpose: this firmware
@@ -65,15 +78,30 @@
 // Four buttons wired straight to GND are a key matrix with one column, and
 // that column is always "driven": ground. So they run through KeyMatrix,
 // whose strike and release edges are already tested, rather than a second
-// copy of that logic - the one-debounce rule from trigger_input.h, kept.
-#define BUTTONS 4
-static const uint8_t kButtonPins[BUTTONS]  = {4, 5, 6, 7};
-static const uint8_t kButtonVoice[BUTTONS] = {
+// copy of that logic - the one-debounce rule from trigger_input.h, kept. The
+// mode button is the last row of that same matrix: on the instrument it is a
+// pin of its own outside the matrix, but it is still one TriggerInput, and
+// here that TriggerInput happens to live in the same array.
+#define BUTTONS     4
+#define VOICE_KEYS  3
+#define MODE_ROW    3
+static const uint8_t kButtonPins[BUTTONS]     = {4, 5, 6, 7};
+static const uint8_t kButtonVoice[VOICE_KEYS] = {
   0,    // b1      bass
   8,    // p1      percussion, five takes
   10,   // p3      ganza
-  12,   // p5      percussion, three takes
 };
+static_assert(MODE_ROW == VOICE_KEYS && VOICE_KEYS < BUTTONS,
+              "the mode button is the row after the voice keys");
+
+// The pedal is outside the matrix on the instrument (agbau/docs/circuit.md),
+// so it is outside it here too: a TriggerInput of its own, polled with the
+// sweep's timestamp. Still the one state machine, not a second debounce.
+#define PEDAL_PIN 39
+
+// The two LEDs, on their pins of the final map. Nothing on the bench yet.
+#define MODE_LED_PIN   15
+#define LOOPER_LED_PIN 8
 
 struct DirectButtons {
   void driveColumn(uint8_t) {}
@@ -86,6 +114,10 @@ static DirectButtons             gPins;
 static KeyMatrix<BUTTONS, 1>     gButtons;
 static VoiceBank<AGBAU_VOICES>   gBank;
 static KitImage                  gKit;
+static TriggerInput              gPedal;
+// Between the keys and the voices: loop() posts key edges, the audio task
+// turns them into notes - see performer.h for why it is the audio task.
+static Performer                 gPerf;
 
 // 1.0 = unity, after the voices' own 0.5 each (Sampler.cpp:113). The Bela had
 // no limiter; here the soft knee in audio_block.h follows.
@@ -157,7 +189,7 @@ static bool mapKit() {
 void setup() {
   Serial.begin(115200);
   delay(300);
-  Serial.println("\n=== agbau: four-button bring-up ===");
+  Serial.println("\n=== agbau: three voices, repeat and looper ===");
 
   if (!mapKit()) {
     while (1) delay(1000);
@@ -174,8 +206,12 @@ void setup() {
                   "stay silent\n", missing);
   }
 
-  for (int b = 0; b < BUTTONS; b++) {
-    pinMode(kButtonPins[b], INPUT_PULLUP);
+  gPerf.init(SAMPLE_RATE);
+  for (int b = 0; b < BUTTONS; b++) pinMode(kButtonPins[b], INPUT_PULLUP);
+  pinMode(PEDAL_PIN, INPUT_PULLUP);
+  pinMode(MODE_LED_PIN, OUTPUT);
+  pinMode(LOOPER_LED_PIN, OUTPUT);
+  for (int b = 0; b < VOICE_KEYS; b++) {
     char name[8];
     voiceName(kButtonVoice[b], name, sizeof(name));
     Serial.printf("GPIO%u -> %s (%s, %u take%s)\n", kButtonPins[b], name,
@@ -183,6 +219,10 @@ void setup() {
                   gBank.voices[kButtonVoice[b]].takeCount(),
                   gBank.voices[kButtonVoice[b]].takeCount() == 1 ? "" : "s");
   }
+  Serial.printf("GPIO%u -> mode button: tap for tempo and repeat, hold 1s to leave\n",
+                kButtonPins[MODE_ROW]);
+  Serial.printf("GPIO%u -> looper pedal: record, play, overdub, hold 1s to erase\n",
+                PEDAL_PIN);
 
   seti2sPins(16, 17, 18, -1);
   // One audio task, one static block - see the same call in the sampler.
@@ -201,36 +241,81 @@ static volatile int32_t  enginePeak = 0;
 
 void loop() {
   // One timestamp for the sweep, same as the sampler. Nothing here blocks
-  // except the debug prints, which are what this bring-up is for.
+  // except the debug prints, which are what this bring-up is for. loop() only
+  // reports edges: what they mean - a note, a repeat, a loop - is decided on
+  // the audio task, where the time is.
   uint32_t now_us = micros();
   KeyMatrix<BUTTONS, 1>::Sweep s = gButtons.scan(gPins, now_us);
 
-  for (int b = 0; b < BUTTONS; b++) {
+  for (int b = 0; b < VOICE_KEYS; b++) {
     const uint8_t v = kButtonVoice[b];
-    if (s.struck & (1u << b)) {
-      gBank.post(v, true);
+    for (int edge = 0; edge < 2; edge++) {
+      const bool down = edge == 0;
+      if (!((down ? s.struck : s.released) & (1u << b))) continue;
+      gPerf.post(v, down);
 #if DEBUG_TRIGGERS
       char name[8];
       voiceName(v, name, sizeof(name));
-      TRIGDBG("GPIO%u down: %s on\n", kButtonPins[b], name);
-#endif
-    }
-    if (s.released & (1u << b)) {
-      gBank.post(v, false);
-#if DEBUG_TRIGGERS
-      char name[8];
-      voiceName(v, name, sizeof(name));
-      TRIGDBG("GPIO%u up:   %s off%s\n", kButtonPins[b], name,
-              AGBAU_PRESETS[AGBAU_VOICE_DEFS[v].group].releaseOnNoteOff
-                  ? "" : " (ignored: percussion decays on its own)");
+      TRIGDBG("GPIO%u %s %s\n", kButtonPins[b], down ? "down:" : "up:  ", name);
 #endif
     }
   }
+  if (s.struck & (1u << MODE_ROW)) {
+    gPerf.post(PERF_KEY_MODE, true);
+    TRIGDBG("GPIO%u down: mode\n", kButtonPins[MODE_ROW]);
+  }
+  if (s.released & (1u << MODE_ROW)) gPerf.post(PERF_KEY_MODE, false);
+
+  {
+    static bool wasHeld = false;
+    if (gPedal.update(now_us, digitalRead(PEDAL_PIN) == LOW)) {
+      gPerf.post(PERF_KEY_PEDAL, true);
+      TRIGDBG("GPIO%u down: pedal\n", PEDAL_PIN);
+    }
+    if (wasHeld && !gPedal.held()) gPerf.post(PERF_KEY_PEDAL, false);
+    wasHeld = gPedal.held();
+  }
+
+  // The LEDs follow the audio task's state; read unsynchronised, as the
+  // DEBUG_ENGINE counters are - a stale read is one LED a block late.
+  digitalWrite(MODE_LED_PIN, gPerf.modeLed() ? HIGH : LOW);
+  digitalWrite(LOOPER_LED_PIN, gPerf.looperLed() ? HIGH : LOW);
+
+#if DEBUG_TRIGGERS
+  // Every change of repeat or looper state, once, from the same
+  // unsynchronised reads.
+  {
+    static bool rep = false;
+    static uint32_t beat = 0;
+    static uint8_t div = 0, layers = 0;
+    static LooperState ls = LOOPER_EMPTY;
+    bool r = gPerf.repeatOn();
+    uint32_t b = gPerf.beat();
+    uint8_t d = gPerf.division();
+    if (r != rep || (r && (b != beat || d != div))) {
+      if (r) {
+        TRIGDBG("REPEAT on   beat %.0f ms (%.1f bpm)  %u per bar\n",
+                1000.0 * b / SAMPLE_RATE, 60.0 * SAMPLE_RATE / b, d);
+      } else {
+        TRIGDBG("REPEAT off\n");
+      }
+      rep = r; beat = b; div = d;
+    }
+    const Looper& lp = gPerf.looper();
+    LooperState st = lp.state();
+    if (st != ls || lp.layers() != layers) {
+      TRIGDBG("LOOP %s  %u layer%s  %.2f s\n", looperStateName(st), lp.layers(),
+              lp.layers() == 1 ? "" : "s", (double)lp.length() / SAMPLE_RATE);
+      ls = st; layers = lp.layers();
+    }
+  }
+#endif
 
 #if DEBUG_ENGINE
   // Once a second: is the audio task running (1378 blocks/s), is anything
   // reaching the DAC (peak), and which voices think they are sounding, with
-  // the take each one picked - the random choice, visible.
+  // the take each one picked - the random choice, visible. "dropped" is key
+  // edges the queue refused; "full" is loop layers closed for lack of room.
   static uint32_t lastReport = 0, lastBlocks = 0;
   if ((uint32_t)(now_us - lastReport) >= 1000000UL) {
     uint32_t blocks = engineBlocks;
@@ -240,9 +325,10 @@ void loop() {
     engineWorst = 0;
     uint32_t period = (uint32_t)((uint64_t)ESP.getCpuFreqMHz() * 1000000ULL *
                                  AUDIO_BLOCK_FRAMES / SAMPLE_RATE);
-    Serial.printf("ENG blocks/s %lu  peak %ld  render worst %.1f%%  dropped %lu  playing[",
+    Serial.printf("ENG blocks/s %lu  peak %ld  render worst %.1f%%  dropped %lu  full %lu  playing[",
                   (unsigned long)(blocks - lastBlocks), (long)peak,
-                  100.0 * worst / period, (unsigned long)gBank.dropped());
+                  100.0 * worst / period, (unsigned long)gPerf.dropped(),
+                  (unsigned long)gPerf.looper().fullCloses());
     bool first = true;
     for (int v = 0; v < AGBAU_VOICES; v++) {
       const Voice& voice = gBank.voices[v];
@@ -264,8 +350,16 @@ void audioUpdate() {
 #if DEBUG_ENGINE
   uint32_t c0 = ESP.getCycleCount();
 #endif
+  // Keys first: repeat hits, loop playback and live notes all land on the
+  // voices at the top of this block. The voices are this task's own, so the
+  // Performer touches them directly; nothing else does.
+  gPerf.process(AUDIO_BLOCK_FRAMES, [](uint8_t v, bool on, uint32_t) {
+    if (v >= AGBAU_VOICES) return;
+    if (on) gBank.voices[v].noteOn();
+    else    gBank.voices[v].noteOff();
+  });
   audioBlockSilence(blk);
-  gBank.render(blk);     // applies the queued note-ons/offs, then the voices
+  gBank.render(blk);
 #if DEBUG_ENGINE
   uint32_t c = ESP.getCycleCount() - c0;
   if (c > engineWorst) engineWorst = c;

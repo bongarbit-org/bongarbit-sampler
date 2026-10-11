@@ -2,8 +2,9 @@
 
 A migração do [Agbau](https://www.instagram.com/bongarbit/), hoje uma Bela mais
 um Arduino, para um único ESP32-S3: 16 vozes com envelope ADSR, e o kit numa
-partição da flash. **Estágio atual:** quatro botões tocando quatro vozes,
-ouvido na placa. O plano completo e a situação de cada etapa estão em
+partição da flash. **Estágio atual:** três botões tocando três vozes,
+ouvidos na placa, mais o botão de modo e o pedal, com repeat e looper testados
+no host e ainda não tocados na placa. O plano completo e a situação de cada etapa estão em
 [docs/migration.md](docs/migration.md).
 
 O motor de áudio, o condicionamento dos botões e a fiação da placa base são
@@ -39,10 +40,29 @@ kit. Os comandos rodam da raiz do repositório.
    .venv/bin/pio device monitor
    ```
 
-No boot, o firmware confere o CRC do kit e diz quantas takes encontrou. Cada
-botão toca uma voz: GPIO 4 → b1 (baixo), GPIO 5 → p1 (percussão, 5 takes),
-GPIO 6 → p3 (ganzá) e GPIO 7 → p5 (percussão, 3 takes). Para trocar a voz de
-um botão, mude `kButtonVoice` no topo de [src/main.cpp](src/main.cpp).
+No boot, o firmware confere o CRC do kit e diz quantas takes encontrou. Três
+botões tocam uma voz cada: GPIO 4 → b1 (baixo), GPIO 5 → p1 (percussão,
+5 takes) e GPIO 6 → p3 (ganzá). Para trocar a voz de um botão, mude
+`kButtonVoice` no topo de [src/main.cpp](src/main.cpp). 
+
+O GPIO 7 é o **botão de modo**, como no Agbau:
+- cada toque bate o tempo (o intervalo desde o toque anterior) e liga o
+  repeat;
+- segurar por 1 s volta ao modo nota;
+- no repeat, segurar uma percussão a repete no tempo, e apertar o baixo
+  escolhe a divisão sem soar. Na bancada só há o b1: são 4 batidas por
+  compasso até o b1 ser apertado no repeat, e 2 depois.
+
+O GPIO 39 é o **pedal do looper**:
+- um toque grava;
+- o segundo fecha o loop e começa a tocar;
+- o terceiro abre um overdub, que fecha no próximo pedal ou quando o loop
+  volta ao começo;
+- são até três overdubs;
+- segurar por 1 s apaga tudo.
+
+O comportamento completo está em [docs/looper.md](docs/looper.md). Os LEDs
+saem nos GPIO 15 (modo) e 8 (looper), e cada mudança de estado aparece no log.
 
 ## O spike de armazenamento
 

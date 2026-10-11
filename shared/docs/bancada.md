@@ -1385,3 +1385,65 @@ Então o log mostra que cada voz para, mas não mede o tempo exato do release.
 | Retrigger sem estalo | **ouvido**, repetindo um botão rápido |
 | Matriz 4×4 | **não testada**: os botões passam por `KeyMatrix<4,1>`, sem varredura de colunas |
 | 16 vozes ao mesmo tempo no firmware do Agbau | **não testado aqui**. A escada da seção 13 roda o mesmo `VoiceBank` até 64 vozes sem clique |
+
+## 15. Agbau: três vozes, botão de modo e pedal — 11/10/2026
+
+A bancada tem quatro botões. O quarto deixou de ser uma voz e virou o botão de
+modo, e entrou um quinto botão para o pedal:
+
+| Botão | Função |
+|---|---|
+| GPIO4 | b1, baixo |
+| GPIO5 | p1, percussão, 5 takes |
+| GPIO6 | p3, ganzá |
+| GPIO7 | botão de modo (o GPIO40 no mapa final), última linha da `KeyMatrix<4,1>` |
+| GPIO39 | pedal do looper, já no pino do mapa final. É um `TriggerInput` próprio, fora da matriz |
+
+Nesta rodada, o botão de modo e o pedal **só aparecem no log**: cada toque, o
+intervalo desde o toque anterior (só no modo) e o tempo apertado. Eles não
+mudam o som. O que vão fazer está em
+[agbau/docs/looper.md](../../agbau/docs/looper.md). Firmware ainda sem
+commit; placa no COM, com `DEBUG_TRIGGERS` e `DEBUG_ENGINE` ligados.
+
+### Pelo log
+
+- **Motor:** 1378 blocos/s, `dropped 0`. O render usa 1,1% do bloco parado e
+  no pior caso 6,4% com as três vozes juntas, o mesmo da seção 14.
+- **Vozes:** cada toque tem a sua soltura, nos três botões. As três tocaram
+  juntas (`playing[b1 p1.3.4 p3.1]`, pico de 17 421, 53% da escala). O p1
+  sorteou takes diferentes, o b1 continua uma linha a mais depois de solto
+  (release de 1 s) e o p3 some na linha seguinte.
+- **Pedal:** um disparo por toque, sem disparo duplo, soltura com 204 ms.
+- **Botão de modo:** um disparo por toque. O primeiro toque depois do boot sai
+  como `first tap`. Os toques ficaram apertados de 98 a 159 ms, bem abaixo de
+  1 s, o tempo em que segurar o botão sai do repeat.
+
+### Tempo batido à mão
+
+Sete intervalos seguidos, batidos num tempo constante: 676, 695, 680, 671,
+688, 706 e 670 ms. A média é 683,7 ms (87,8 bpm), com desvio padrão de 13,3 ms
+(1,9%). O menor e o maior intervalo correspondem a 89,6 e 85,0 bpm.
+
+O `looper.md` decide que vale o **último intervalo, sem média**, como no
+`.ino`. Com estes toques, o tempo do repeat cairia em qualquer ponto entre
+85,0 e 89,6 bpm, conforme qual tenha sido o último toque.
+
+O `.ino` daria **660 ms (90,9 bpm) para os sete**, todos iguais. O bug 1 do
+`looper.md` (`(1000 / bpm) * 60` em inteiros) só produz tempos em degraus de
+60 ms, e de 84 a 90 bpm todos caem em 660 ms. No original, o tempo saía
+estável e 3,5% rápido. Com o bug corrigido, ele sai certo e varia ±2% de um
+tap para o outro. É uma diferença de jogabilidade que só vai poder ser julgada
+de ouvido, quando o repeat existir.
+
+Antes destes toques, dois intervalos longos: 29 499 ms e 135 468 ms. Pela
+regra do `looper.md`, o primeiro mudaria o tempo para um tempo a cada 29,5 s,
+como o `.ino` também faria. O segundo passa de 60 s e só recomeçaria a
+contagem.
+
+### Situação
+
+| Item | Status |
+|---|---|
+| Três vozes, soltura, sorteio de takes | **ouvido na placa** com este firmware e conferido no log |
+| Botão de modo e pedal: disparo, soltura, intervalo, tempo apertado | **conferido no log** |
+| Repeat e looper | **não existiam nesta rodada**. A spec (`looper.md`) foi aprovada depois dela, e o código veio em seguida |

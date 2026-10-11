@@ -11,8 +11,9 @@ motor de áudio (blocos de float, buffer de DMA de 5,8 ms):
 - **[Agbau](agbau/)** (env `agbau`): a migração do
   [Agbau](https://www.instagram.com/bongarbit/), hoje uma Bela mais um Arduino,
   para um único ESP32-S3. São 16 vozes com envelope ADSR, e o kit fica numa
-  partição da flash. **Estágio atual:** quatro botões tocando quatro vozes,
-  ouvido na placa. O plano completo e a situação de cada etapa estão em
+  partição da flash. **Estágio atual:** três botões tocando três vozes,
+  ouvidos na placa, mais o botão de modo e o pedal, com repeat e looper
+  testados no host e ainda não tocados na placa. O plano completo e a situação de cada etapa estão em
   [agbau/docs/migration.md](agbau/docs/migration.md).
 
 Como usar cada um está no README da pasta dele.

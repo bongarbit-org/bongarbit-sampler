@@ -38,29 +38,30 @@
 static_assert((NOTE_QUEUE_SIZE & (NOTE_QUEUE_SIZE - 1)) == 0,
               "NOTE_QUEUE_SIZE must be a power of two");
 
-struct NoteEvent {
-  uint8_t voice;
-  bool    on;      // true = note-on, false = note-off
-};
-
-class NoteQueue {
+/*
+ * The queue itself, for any small trivially-copyable event. Two instances in
+ * the Agbau carry different things across the same boundary: note requests
+ * into the VoiceBank, and key edges into the Performer (performer.h).
+ */
+template <typename T>
+class SpscQueue {
  public:
   /* Producer side: loop() only. False if the queue is full; the event is
    * dropped and counted rather than blocking the caller. */
-  bool post(uint8_t voice, bool on) {
+  bool push(const T& e) {
     uint32_t h = _head.load(std::memory_order_relaxed);
     uint32_t t = _tail.load(std::memory_order_acquire);
     if (h - t >= NOTE_QUEUE_SIZE) {
       _dropped++;
       return false;
     }
-    _buf[h & (NOTE_QUEUE_SIZE - 1)] = NoteEvent{voice, on};
+    _buf[h & (NOTE_QUEUE_SIZE - 1)] = e;
     _head.store(h + 1, std::memory_order_release);
     return true;
   }
 
   /* Consumer side: the audio task only. False when there is nothing left. */
-  bool take(NoteEvent& e) {
+  bool take(T& e) {
     uint32_t t = _tail.load(std::memory_order_relaxed);
     uint32_t h = _head.load(std::memory_order_acquire);
     if (t == h) return false;
@@ -73,8 +74,18 @@ class NoteQueue {
   uint32_t dropped() const { return _dropped; }
 
  private:
-  NoteEvent             _buf[NOTE_QUEUE_SIZE];
+  T                     _buf[NOTE_QUEUE_SIZE];
   std::atomic<uint32_t> _head{0};
   std::atomic<uint32_t> _tail{0};
   uint32_t              _dropped = 0;
+};
+
+struct NoteEvent {
+  uint8_t voice;
+  bool    on;      // true = note-on, false = note-off
+};
+
+class NoteQueue : public SpscQueue<NoteEvent> {
+ public:
+  bool post(uint8_t voice, bool on) { return push(NoteEvent{voice, on}); }
 };
