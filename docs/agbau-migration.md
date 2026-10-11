@@ -51,8 +51,12 @@ Em int16 caem para **8,995 MB**, e o N16R8 tem **8,389 MB** de PSRAM
 (`p3.1.wav`, `p7.1.wav`, ~20 s cada) somam 3,57 MB — 40% do kit.
 
 Há um corte que não muda o som em nada: nas percussões que não são ganzá, o
-decay linear de 3 s chega a zero em A+D = 3,01 s e o sustain é 0, então todo
-frame depois disso é multiplicado por 0 (`p2.2.1`, `p5.3.*`, `p6.3.2-3`).
+decay linear de 3 s chega a zero em A+D = 3,01 s e o sustain é 0, então, no
+porte, todo frame depois disso é multiplicado por exatamente 0 (`p2.2.1`,
+`p5.3.*`, `p6.3.2-3`). No Bela não é exatamente 0: o decay acumula erro de
+arredondamento e para em −0,00108 (−59 dB de ganho, fase invertida). Medido
+nas samples reais, o que o Bela toca depois de A+D sai entre −92 e −118 dBFS —
+abaixo de 1 LSB de 16 bits. O corte é sem perda também contra a saída do Bela.
 Somando a isso o corte de caudas abaixo de −60 dBFS, com 10 ms de fade em cada
 corte (`p4.3.1` e `p8.3.1` têm mais da metade do arquivo em silêncio), o kit
 cai para **8,286 MB**. Cabe — por ~103 KB, contra uma PSRAM que nunca está
@@ -120,9 +124,9 @@ O seletor (obedece ou ignora note-off) é política da **voz**, não do envelope
 `ADSR`. Sem ele a percussão do Agbau se comporta como baixo, ou vice-versa.
 
 Dois detalhes do Bela que o porte muda de propósito, documentados no header:
-o fim de cada segmento crava o valor alvo (no Bela o sustain fica em
-1 ± erro de arredondamento acumulado em 441 incrementos), e um segmento de
-tempo zero salta direto para o alvo (no Bela, `rampTo(x, 0)` não se move).
+o fim de cada segmento crava o valor alvo (no Bela o erro acumulado deixa o
+sustain "1,0" em 1,0000049, o release "a 0" em +0,0005 e o decay da percussão
+em −0,00108), e um segmento de tempo zero salta direto para o alvo (no Bela, `rampTo(x, 0)` não se move).
 Nenhum dos três presets cai no segundo caso. E um que o porte mantém:
 `trigger()` rampa do nível **atual** até 1, não de zero — o `rampTo(0.0,
 0.0001)` em `ADSR.cpp:42` é sobrescrito na linha 46 antes de ter efeito.

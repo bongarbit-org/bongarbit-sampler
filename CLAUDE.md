@@ -31,10 +31,12 @@ Trigger logic, mixer arithmetic and the DSP are verified on the host; everything
 - [src/mixer.h](src/mixer.h) — the fixed-point gain and soft-knee limiter. **No longer in the audio path**, kept as the *reference* the float limiter is tested against: it is the curve that was judged by ear on hardware. Do not delete it as dead code.
 - [src/audio_block.h](src/audio_block.h) — `AudioBlock`, the float units, and the conversions at the engine's edges. The float soft knee lives here.
 - [src/pitch_shift.h](src/pitch_shift.h) — `PitchShift`, the first stream processor. Two windowed taps on a delay line.
+- [src/envelope.h](src/envelope.h) — `Envelope`, the Agbau's linear ADSR, one gain per frame. Not a chain processor: sixteen of them, each scaling one voice's mono stream before the sum. A port of the Bela ADSR held frame by frame to [sim/bela_reference.h](sim/bela_reference.h); it differs on purpose only in landing segments exactly on their targets (Bela's accumulated rounding leaves its "0" at −59 dB) and in letting a zero-time segment move.
 - [src/kit_image.h](src/kit_image.h) — `KitImage`, the parser for the Agbau kit as one image in a flash data partition (written by [tools/agbau_kit.py](tools/agbau_kit.py)). Trusts nothing in the image: its pointers are read by the audio task, so every offset is bounds-checked in 64-bit and a partial write is caught by a zlib-compatible CRC. See [docs/agbau-migration.md](docs/agbau-migration.md).
 - [sim/trigger_model.h](sim/trigger_model.h) — header-only scaffolding: pin-trace generator, RC filter model, scoring runner, plus models of the two **rejected** trigger designs. Those are copies on purpose; they no longer exist in the firmware and exist only to keep failing in the documented way. **Timestamps are `uint32_t`**, matching `micros()`, so unsigned-difference arithmetic wraps in simulation exactly as on the board; `run()` takes a time base so the wrap boundary itself is testable.
 - [sim/trigger_sim.cpp](sim/trigger_sim.cpp) — the sweep/report CLI (`--sweep=all`).
-- [test/](test/) — five Unity suites: `test_trigger`, `test_mixer`, `test_audio_block`, `test_pitch_shift`, `test_kit_image`. 90 cases.
+- [sim/bela_reference.h](sim/bela_reference.h) — a verbatim copy of the Agbau's Bela `Ramp`/`ADSR`/`Sampler::process()`. The reference the port is tested against, the way `mixer.h` is for the knee: it is the code whose sound was approved by playing. Never compiled into firmware.
+- [test/](test/) — six Unity suites: `test_trigger`, `test_mixer`, `test_audio_block`, `test_pitch_shift`, `test_kit_image`, `test_envelope`. 102 cases.
 
 The two windows are instance members with defaults from `TRIG_CONFIRM_US` / `TRIG_RELEASE_MS` (both `#ifndef`-guarded) rather than macros read inline, so sweeps and tests can vary them per instance. Costs 8 bytes per button.
 
@@ -47,6 +49,8 @@ Each suite is organised by *reason*, not code shape. Some tests are load-bearing
 - `test_float_knee_matches_the_integer_reference` sweeps the float limiter against `mixer.h` and asserts they agree within 1 LSB. This is what connects the current engine to the sound that was actually approved on hardware.
 - `test_block_size_does_not_change_the_output` feeds the pitch shifter the same signal in ragged chunks (1, 7, 32, 3, 64, 13, 128, 5 frames) and demands bit-identical output to one 16384-frame call. **This is the test that makes "audio-in will drop in without a rewrite" a fact rather than a hope.** Any new processor needs its own.
 - `test_bypass_is_bit_exact` — a processor sitting permanently in the chain must be free when off.
+- `test_envelope_matches_the_bela_reference` — the Agbau port is still the Agbau. Its bound (2e-3) is Bela's own accumulated drift, not the port's; frame timing is pinned separately, where a shift cannot hide under it.
+- `test_every_release_ends_on_exact_zero` — `silent()` is the only way a looping ganzá voice stops. A release that ends at 1e-9 instead of 0 leaves it looping at inaudible gain forever, as it did on the Bela.
 
 Two dependencies are pinned to exact revisions, for the same reason:
 
