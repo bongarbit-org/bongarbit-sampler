@@ -1249,3 +1249,66 @@ Reler as bordas depois do `load()` não perde nada disso.
 | `WAV_RESTORE_EDGES=1` | **compila**; nunca rodou na placa |
 | `WAV_RESTORE_EDGES=0` (padrão) | build **idêntico ao do `main`** em todas as seções (`.text`, `.rodata`, `.data`, `.bss`) — o padrão não mudou nada |
 | Audível | **não ouvido** |
+
+## 13. Spike de armazenamento do Agbau: opção A e escada de vozes — 11/10/2026
+
+Primeira rodada de `src/test_agbau_storage.cpp` (env `agbau_storage`) na
+placa. Contexto em [agbau-migration.md](agbau-migration.md), etapa 0. **Placa
+no conector COM** (ponte WCH `1a86:55d3`), que neste env também é por onde sai
+a serial — ver seção 11.
+
+Só a opção **A** (kit numa partição da flash, mapeado) foi medida. A **B**
+(SD → PSRAM) não rodou: o cartão montou, mas não tinha `/agbau/`.
+
+### Opção A
+
+| Medida | Resultado |
+|---|---|
+| Gravar o kit (8,996 MB, `esptool write_flash` a 921600) | 1 min 47 s, hash verificado — é o custo de trocar o kit nesta opção |
+| `esp_partition_mmap()` dos 8,996 MB | **funciona**, 53 µs; páginas de MMU livres 378 → 240 |
+| Checagem de limites da imagem | 56 µs |
+| CRC completo no boot | 1078 ms |
+| 16 fluxos crus (sem envelope) lendo da flash | média 3730 ciclos/bloco (**2,1%**), pior 4772 (2,7%) de 174 149 |
+
+A maior dúvida da opção A — se um mapeamento de ~9 MB cabe ao lado dos 8 MB
+de PSRAM já mapeados — está respondida: cabe, e sobram 240 páginas de 64 KB.
+
+### Escada de vozes (lendo da flash)
+
+`VoiceBank` real, todas as vozes em loop com o envelope de verdade (o custo de
+um ganzá segurado, a voz mais cara do Agbau). Cada degrau: 6 s de seno de
+440 Hz com as vozes renderizando mudas, depois 6 s das vozes audíveis.
+
+| Vozes | Render médio | Pior | Maior intervalo entre renders | Blocos/s mín. |
+|---|---|---|---|---|
+| 1 | 1,5% | 2,5% | 1397 µs | 1378 |
+| 4 | 4,7% | 6,5% | 1390 µs | 1378 |
+| 8 | 8,9% | 11,9% | 1374 µs | 1378 |
+| **16** | **17,3%** | **21,5%** | 1314 µs | 1378 |
+| 32 | 34,1% | 40,3% | 1223 µs | 1378 |
+| 64 | 68,0% | 79,9% | 1042 µs | 1378 |
+
+O buffer de DMA tem 5804 µs. Nenhum intervalo chegou perto disso em nenhum
+degrau: **por aritmética, não houve underrun de 1 a 64 vozes.** O intervalo
+de ~1,4 ms é a cadência normal: o `audioBlockWrite()` libera um buffer de
+DMA de 64 frames (1,45 ms) por vez, e o motor renderiza dois blocos de 32 em
+seguida.
+
+O Agbau usa no máximo 16 vozes, e com elas sobra quatro vezes o orçamento.
+Isso também cobre a revalidação do buffer de 5,8 ms contra o pin atual da M16
+(CLAUDE.md), numa carga quatro vezes maior que a do rolo de quatro vozes
+original — **pelos números**; o ouvido está abaixo.
+
+**Custo por voz:** ~1,05% do bloco por voz real, contra ~0,13% por fluxo cru
+na medição da opção A. A voz com envelope sai ~8× mais cara que a leitura
+pura. Não é problema com 16 vozes, mas indica onde está o custo — o laço de
+`Voice::render()`, não a memória — se um dia faltar CPU.
+
+### Situação
+
+| Item | Status |
+|---|---|
+| mmap, CRC, custo de render, escada | **medido na placa** |
+| Escada sem estalos no seno | **a confirmar de ouvido** |
+| Opção B (SD → PSRAM, com as bordas restauradas) | **não medida** — falta copiar `sd_kit/` para `/agbau/` no cartão |
+| Comparação amostra a amostra A × B | **não executada** (depende da B) |
