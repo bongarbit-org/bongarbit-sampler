@@ -1,10 +1,15 @@
-# Circuito — bongarbit-sampler
+# Circuito — a placa base
 
 Plano de fiação para ESP32-S3 N16R8 + DAC PCM5102A (I2S) + leitor de
 microSD (SPI), com 4 botões de disparo (trigger) de sample em pinos
 contíguos: GPIO4 (botão principal) e GPIO5/6/7 (pads que tocam `1.wav`,
 `2.wav` e `3.wav` da raiz do cartão). Todos ligados a GND físico real,
 sem nenhum pino "virtual" de GND.
+
+Está em `shared/` porque é a base dos dois instrumentos: o N16R8, a
+alimentação, o DAC e o SD valem igual para o Agbau, cujo mapa próprio
+([agbau/docs/circuit.md](../../agbau/docs/circuit.md)) só cobre o que é dele.
+Os botões descritos aqui são os do sampler.
 
 Fontes usadas para montar este plano:
 - Pinout do dev kit: https://randomnerdtutorials.com/esp32-s3-devkitc-pinout-guide/
@@ -82,7 +87,7 @@ por um único DAC (sem distribuir um master clock externo):
 | `SCK` (system clock) | **GND** | Habilita o modo de clock automático interno do PCM5102A — gera o master clock a partir do próprio BCK, dispensando um oscilador de 11.2896MHz externo. Confirmado no fórum: *"Just connect SCK to GND at each DAC board... I have always used PCM5102A's in that configuration without any problems."* |
 | `FMT` (format select) | **GND** | Seleciona formato I2S padrão (necessário para bater com a saída da M16, que usa I2S Philips) |
 | `XSMT` (soft mute) | **3V3** | Precisa ficar em nível alto para desmutar a saída. A maioria dos breakouts genéricos já traz um pull-up para isso, mas confira com um multímetro — se ficar flutuante ou em GND, a saída de áudio fica permanentemente mudo mesmo com o I2S funcionando |
-| `FLT` (filter select) | GND | Filtro normal (latência normal); é o default na maioria das placas |
+| `FLT` (filter select) | GND, ou **3V3** | GND = FIR linear-phase, group delay de 22 amostras (0,50ms a 44,1kHz) — é o default da maioria das placas. **3V3 = IIR minimum-phase, ~80µs.** Para percussão o de baixa latência é melhor duas vezes: 420µs a menos e sem *pre-ringing* antes do transiente. Ver [sampler/docs/circuit-rc.md](../../sampler/docs/circuit-rc.md) |
 | `DEMP` (de-emphasis) | GND | Desabilita de-ênfase de 44.1kHz (não necessário para reprodução de samples) |
 
 Esses quatro últimos pinos (`FMT`, `XSMT`, `FLT`, `DEMP`) não aparecem no
@@ -90,6 +95,25 @@ tópico do fórum (o autor usava um breakout que já os resolve on-board),
 mas são padrão do datasheet do PCM5102A — confira a serigrafia da sua
 placa, pois em muitos breakouts genéricos eles já vêm amarrados
 internamente aos valores acima e nem são expostos.
+
+> ⚠️ **"Não estão expostos" não quer dizer "estão resolvidos".** Num módulo de
+> 6 pinos (`SCK BCK DIN LCK GND VIN`), esses quatro costumam estar no **verso**,
+> como jumpers de solda de três ilhas marcados `H1L`…`H4L` — a ilha do meio é o
+> pino do chip, as das pontas são `H` (3V3) e `L` (GND). E podem vir **todos
+> abertos de fábrica**.
+>
+> Aberto, cada pino flutua e é puxado para baixo pelo pull-down interno do
+> PCM5102A. Para `FLT`, `DEMP` e `FMT` isso cai justamente nos valores que a
+> tabela acima pede, então não dá sintoma. Para o `XSMT` é o oposto: nível baixo
+> é **soft mute ativo**, e a saída fica muda com I2S rodando, dados chegando,
+> alimentação correta e nada no log — o PCM5102A não tem pino de status.
+>
+> Vire a placa antes de montar. Se houver `H*L` abertos, o `XSMT` precisa ser
+> ligado ao lado `H`, ou receber um fio da ilha até 3V3. Confirme com o
+> multímetro (placa ligada, DC): a ilha `XSMT` tem que ler ~3,3 V, não 0 V.
+>
+> Isso custou uma sessão inteira de bancada em 13/08/2026 — ver
+> [bancada.md](bancada.md), seção 8.
 
 ## Leitor de microSD (SPI)
 
@@ -123,18 +147,47 @@ GPIO6 (INPUT_PULLUP) ──● pad 2   ●── GND    (2.wav)
 GPIO7 (INPUT_PULLUP) ──● pad 3   ●── GND    (3.wav)
 ```
 
-- **Trigger (GPIO4):** debounce "espera estabilizar antes de disparar"
-  (25ms) — dispara só depois da leitura ficar estável.
-- **Pads (GPIO5/6/7):** debounce invertido, via biblioteca Bounce2 (10ms).
-  O firmware dispara o som na primeira leitura bruta do pino, **antes** de
-  esperar o debounce estabilizar — zero atraso entre o toque físico e o
-  som. Só depois disso o pino fica bloqueado (ignorado) até o Bounce2
-  confirmar que o botão realmente voltou pro estado solto, o que evita
-  disparo repetido ("efeito metralhadora") enquanto o botão é segurado,
-  sem atrasar a resposta inicial.
+Os **quatro** botões — trigger e pads — rodam o mesmo condicionamento
+(`TriggerInput`, em `shared/src/trigger_input.h`). Sem biblioteca de debounce:
+as duas proteções leem o pino **bruto** e são independentes uma da outra.
+
+O GPIO4 já teve um esquema próprio de "espera estabilizar" com 25ms, que era a
+maior parcela de latência daquele botão. Ter duas implementações divergentes no
+mesmo caminho de trigger foi o que escondeu o bug de retrigger dos pads por
+tanto tempo — agora existe uma só.
+  - `TRIG_CONFIRM_US` (200µs): o nível baixo precisa persistir esse tempo
+    antes de disparar. Rejeita glitch de EMI mais curto que a janela, ao
+    custo de 0,2ms de latência. Precisa ficar bem abaixo de um segmento de
+    quique (~300µs); com 1ms a janela só se satisfaz depois que o quique
+    inteiro assenta, e a latência vira 3ms.
+  - `TRIG_RELEASE_MS` (3ms): depois de disparar, o pad só rearma quando o
+    pino ficar em alto continuamente por esse tempo. É o que evita o
+    disparo repetido ("efeito metralhadora") enquanto o botão é segurado.
+
+  Antes isso era feito com o estado *debounced* da Bounce2, e era bug: esse
+  estado atrasa em relação ao pino, então rearmar pelo nível redisparava
+  ~112 vezes por toque, e rearmar pela borda travava o pad de vez quando a
+  batida era mais curta que o intervalo de debounce. Medido em
+  `shared/sim/trigger_sim.cpp`, que roda no PC sem placa.
 
 Cada pad toca o arquivo correspondente (`/1.wav`, `/2.wav`, `/3.wav`) na
 raiz do cartão SD, carregado inteiro na PSRAM no boot.
+
+## Melhoria recomendada: debounce RC (ainda não montada)
+
+Um pull-up externo de 10k, um resistor de 220 ohms em série e um capacitor de
+100nF por botão eliminam o quique no hardware e entregam bordas limpas ao pino.
+As constantes de tempo são assimétricas — instantâneo na batida, filtrado na
+soltura — que é exatamente a forma que um pad de percussão quer.
+
+Ganha-se **quique** e **jitter**: simulado, uma prensada que produz 14
+transições no pino passa a produzir 2, ao custo de 50 µs de latência. Não
+substitui o `TRIG_CONFIRM_US` contra batida fantasma — as defesas são
+complementares, e o motivo está no guia.
+
+Guia de montagem completo, com lista de compras, esquema, passo a passo e como
+testar sem osciloscópio:
+**[sampler/docs/circuit-rc.md](../../sampler/docs/circuit-rc.md)**.
 
 ## Diagrama de blocos
 
