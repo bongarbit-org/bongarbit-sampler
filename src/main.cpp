@@ -260,6 +260,22 @@ TriggerInput    padInput[PAD_COUNT];
 // Per-pad level, 1.0 = unity. Balance the kit here.
 float           padGain[PAD_COUNT] = {1.0f, 1.0f};
 #endif
+
+// Wav::load() returns true even when it did not load the whole file. With
+// PSRAM present it caps each buffer at 90% of the PSRAM still free - 75% if
+// the allocation is then refused - and cuts the file to fit. M16 says so once,
+// in the middle of its own load output, and getFrameCount() becomes the cut
+// length, which the DBG "loaded" line then reports as if it were the file. A
+// sample that stops short reads as a bad file instead of a full memory. Loads
+// run in order, so it is the last files loaded that get cut.
+// Warning only: what plays is exactly what was loaded, unchanged.
+static void warnIfTruncated(const Wav& w) {
+  if (w.getFrameCount() < w.getFileFrameCount()) {
+    Serial.printf("WAV: '%s' TRUNCATED to %lu of %lu frames - out of PSRAM, "
+                  "the tail will not play\n",
+                  w.getFilename(), w.getFrameCount(), w.getFileFrameCount());
+  }
+}
 #endif
 
 // --- Latency probe (see docs/circuit-rc.md, "Medir de verdade") ---
@@ -378,19 +394,37 @@ void setup() {
   Serial.begin(115200);
   delay(500);
 
-  // PSRAM is the single most important thing this log can confirm, and its
-  // absence used to be silent. M16's psramAllocSafe() has no internal-RAM
-  // fallback, so without PSRAM every Wav::load() below fails and the only
-  // symptom is "WAV: failed to load" with no stated cause - which sends you
-  // debugging the SD wiring for a build configuration problem. Report it
-  // before anything can depend on it, and shout when it is missing (same
-  // convention as the SD failure below: errors are unconditional, successes
-  // go through DBG).
+  // PSRAM is the single most important thing this log can confirm, because
+  // losing it does not stop the sampler - it shrinks it, quietly.
+  //
+  // This comment used to say the opposite: that M16's psramAllocSafe() has no
+  // internal-RAM fallback, so without PSRAM every Wav::load() below fails and
+  // the only symptom is "WAV: failed to load". The premise is true of
+  // psramAllocSafe() itself; the conclusion was wrong, because Wav::load()
+  // does not stop there. When PSRAM is missing, or refuses the allocation, it
+  // falls back to a plain malloc() from internal RAM and prints "Wav:
+  // Allocated N bytes in RAM". Recorded rather than deleted because the wrong
+  // version predicted a loud failure, and the real behaviour is the opposite.
+  //
+  // What actually happens without PSRAM: samples load into internal RAM until
+  // it runs out - a few hundred KB in total on the S3, less in one piece. A
+  // kit of short hits can fit entirely and nothing sounds wrong at all; a
+  // bigger one loads what fits and fails the rest. GPIO4's file loads first,
+  // and if it fails boot halts at "WAV: failed to load"; a pad that fails
+  // stays silent while the rest plays. Either way a half-working sampler
+  // sends you debugging SD files or wiring for what is a board/build
+  // configuration problem. So report it before anything can depend on it,
+  // with the internal-RAM budget left (the real figures, rather than the
+  // estimate above), and shout when it is missing - same convention as the
+  // SD failure below: errors are unconditional, successes go through DBG.
   size_t psramTotal = ESP.getPsramSize();
   if (psramTotal == 0) {
-    Serial.println("PSRAM: NOT AVAILABLE - samples cannot load. This is a "
-                   "board/build configuration problem, not wiring: check that "
-                   "platformio.ini still has board = esp32-s3-devkitc1-n16r8");
+    Serial.printf("PSRAM: NOT AVAILABLE - samples fall back to internal RAM "
+                  "(%u bytes free, largest block %u): small ones load, bigger "
+                  "ones fail. This is a board/build configuration problem, not "
+                  "wiring: check that platformio.ini still has "
+                  "board = esp32-s3-devkitc1-n16r8\n",
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
   } else {
     DBG("PSRAM: %u bytes free of %u\n",
         (unsigned)ESP.getFreePsram(), (unsigned)psramTotal);
@@ -421,6 +455,7 @@ void setup() {
     Serial.println("WAV: failed to load file at index " + String(FILE_INDEX));
     while (1) delay(1000);
   }
+  warnIfTruncated(wav);
 
   sampleChannels = wav.getChannels();
   DBG("WAV: loaded '%s' - %u ch, %lu Hz, %lu frames (~%lu ms)\n",
@@ -441,6 +476,7 @@ void setup() {
       Serial.printf("Pad %u: failed to load %s\n", i + 1, padFiles[i]);
       continue;
     }
+    warnIfTruncated(padWav[i]);
     padChannels[i] = padWav[i].getChannels();
     padSamp[i].setTable(padWav[i].getBuffer(), padWav[i].getFrameCount(),
                          padWav[i].getSampleRate(), padChannels[i]);

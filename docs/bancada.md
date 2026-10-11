@@ -220,14 +220,29 @@ os `.wav` cabem na memória. Nenhuma dessas coisas tinha prova.
 **Se a primeira linha for isto, pare aqui:**
 
 ```
-PSRAM: NOT AVAILABLE - samples cannot load. This is a board/build
+PSRAM: NOT AVAILABLE - samples fall back to internal RAM (N bytes free,
+largest block M): small ones load, bigger ones fail. This is a board/build
 configuration problem, not wiring: check that platformio.ini still has
 board = esp32-s3-devkitc1-n16r8
 ```
 
-Não adianta mexer em fio nenhum. A `psramAllocSafe()` da M16 não tem fallback
-para RAM interna, então sem PSRAM todo `Wav::load()` falha — e o sintoma
-seguinte seria um `WAV: failed to load` que parece problema de cartão.
+Não adianta mexer em fio nenhum — e pare **mesmo que o resto do boot pareça
+normal**. Sem PSRAM, o `Wav::load()` da M16 cai para `malloc()` na RAM interna
+(imprime `Wav: Allocated N bytes in RAM`), que tem algumas centenas de KB.
+Samples curtos podem caber todos e tocar sem sintoma nenhum; num kit maior, o
+que não cabe falha — se for o arquivo do GPIO4 o boot trava em
+`WAV: failed to load`, se for de um pad só aquele pad fica mudo. Nos dois
+casos parece problema de cartão ou de arquivo.
+
+> **Correção — 11/10/2026.** Este parágrafo dizia que a `psramAllocSafe()` da
+> M16 não tem fallback para RAM interna, "então sem PSRAM todo `Wav::load()`
+> falha". A premissa vale para a `psramAllocSafe()`; a conclusão não, porque
+> o `Wav::load()` (M16 `aef89b2`, `Wav.h`) só tenta a PSRAM primeiro — se ela
+> não existe ou recusa a alocação, ele faz `malloc()` na RAM interna. A
+> previsão errada era uma falha barulhenta; o comportamento real é uma falha
+> parcial e silenciosa, o que torna esta linha do log mais importante, não
+> menos. A mensagem do firmware dizia `samples cannot load` e foi corrigida
+> junto; agora ela imprime quanta RAM interna sobrou.
 
 ### Fase C — primeiro som
 
@@ -663,8 +678,9 @@ desfeita** antes da fase E.
 | Placa não aparece no `pio device monitor` | cabo USB só de carga; ou falta `-DARDUINO_USB_MODE=1` (já está no `platformio.ini`) |
 | Monitor vazio, mas firmware roda | `ARDUINO_USB_CDC_ON_BOOT` — Serial foi para UART0, que não está ligada em nada |
 | `SD: init FAILED` | fiação SPI, ou cartão não FAT32. Rode o `sd_test` para isolar |
-| `PSRAM: NOT AVAILABLE` | configuração de board, **não** fiação — confira `board =` no `platformio.ini` |
-| `WAV: failed to load`, com PSRAM OK | arquivo corrompido, ou `.wav` maior que a PSRAM livre |
+| `PSRAM: NOT AVAILABLE` | configuração de board, **não** fiação — confira `board =` no `platformio.ini`. Pode aparecer com o sampler tocando: sem PSRAM, samples pequenos carregam na RAM interna |
+| `WAV: failed to load`, com PSRAM OK | arquivo corrompido, ou formato que a M16 não lê. Tamanho quase nunca é a causa (esta linha dizia "`.wav` maior que a PSRAM livre" — errado em 11/10/2026: arquivo grande demais é cortado, não recusado; ver a linha de baixo) |
+| `WAV: '<arquivo>' TRUNCATED to X of Y frames` | `.wav` maior que 90% da PSRAM ainda livre: a M16 corta o arquivo e o carregamento "dá certo". Os últimos carregados são os cortados. Encurte, reduza a taxa ou tire um sample |
 | Log limpo, nenhum som | `XSMT` baixo ou flutuando; alimentação do DAC; GND não comum |
 | Chiado ou estalo contínuo | ring de DMA raso demais — suba `DMA_BUFFER_LENGTH` |
 | Estalo só no rolo de 4 vozes | mesma coisa, no caminho mais pesado |
