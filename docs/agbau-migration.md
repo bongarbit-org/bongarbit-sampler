@@ -63,6 +63,13 @@ cai para **8,286 MB**. Cabe — por ~103 KB, contra uma PSRAM que nunca está
 inteira livre. Não é margem. `tools/agbau_kit.py` reproduz esses números
 (`--trim-envelope --trim-tail-db -60`).
 
+E o corte de cauda tem um custo que não aparece no nível do sinal. Ele muda o
+frame em que a take acaba, e é ali que o Bela congela o envelope (etapa 2): em
+`p4.3.1` o próximo toque passaria a atacar a partir de 0,83 em vez de 0,57, em
+`p8.3.1` de 0,82 em vez de 0,49. O corte por envelope não tem esse problema —
+quando ele corta, o envelope já está em 0, onde congelaria de qualquer jeito.
+É mais um ponto contra a opção B, a ser ouvido antes de ser aceito.
+
 Duas saídas, e a escolha fica para depois de medir as duas na placa
 (`src/test_agbau_storage.cpp`, env `agbau_storage`):
 
@@ -152,11 +159,22 @@ task de áudio o aplica na borda do bloco: o mesmo padrão de
 `PitchShift::setEngaged()`, pelo mesmo motivo.
 
 O porte é **fiel primeiro**: retrigger volta a leitura a 0 com um take novo e
-o envelope subindo do nível em que estava (`Sampler.cpp:37-39`). Isso pode
+o envelope subindo do nível em que estava (`Sampler.cpp:37-39`). E "o nível em
+que estava" tem uma pegadinha: quando uma take one-shot acaba, o Bela chama
+`release()` e **congela** o envelope ali, porque `Sampler::process()` retorna
+antes de avançá-lo (`Sampler.cpp:109-111`). As percussões curtas acabam antes
+dos 3 s do decay, então o próximo toque ataca a partir de 0,44–0,57 (p1, p4,
+p8), não de zero — um transiente mais seco do que o preset sugere (p6.3.1 acaba
+quase no fim do decay e congela em ~0,03). O porte
+reproduz isso por construção: voz que não está tocando não é renderizada, e o
+envelope dela não anda. Isso pode
 estalar num rulo, porque a posição salta com o ganho alto. O Agbau já é tocado
 ao vivo assim; a decisão de corrigir fica para depois de ouvir na placa.
 Uma diferença que não muda o som: a voz desliga quando o envelope chega ao
-fim. O Bela deixava um ganzá solto em loop a ganho zero para sempre.
+fim. O Bela deixava um ganzá solto em loop a ganho zero para sempre. Isso só
+funciona porque o release do porte termina em 0,0 exato — com o erro
+acumulado do Bela ele terminaria em 1e-9, `silent()` nunca dispararia, e o
+ganzá ficaria em loop do mesmo jeito (`test_every_release_ends_on_exact_zero`).
 
 O mapa botão → voz vem do `.ino`: `Keypad` calcula `kcode = linha·4 + coluna`
 e `notaMidi[kcode] = 60 + 4·coluna + linha`; no Bela, notas 60–67 são

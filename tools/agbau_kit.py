@@ -36,7 +36,12 @@ CUTS (both off by default - option A, the flash partition, needs neither)
                     3.0); PRESETS below has to follow src/agbau_kit.h.
   --trim-tail-db DB Cut each take after its last sample above DB dBFS (e.g.
                     -60), keeping a 10ms linear fade past that point. Not
-                    lossless - inaudible, which is a judgement, not a fact.
+                    lossless, and not only in level: a take ending earlier
+                    moves the frame where the voice freezes its envelope
+                    (src/voice.h), which is where the NEXT hit's attack starts
+                    from. On p4.3.1 that is 0.83 instead of 0.57, on p8.3.1
+                    0.82 instead of 0.49. --trim-envelope has no such effect -
+                    where it cuts, the envelope is already at 0.
 
 The ganza loops (p3.1, p7.1, ~20s each) are 40% of the kit and are NOT cut by
 anything here. Where to shorten a played rhythmic loop is a musical decision
