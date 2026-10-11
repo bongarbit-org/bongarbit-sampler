@@ -64,6 +64,13 @@ O GPIO 39 é o **pedal do looper**:
 O comportamento completo está em [docs/looper.md](docs/looper.md). Os LEDs
 saem nos GPIO 15 (modo) e 8 (looper), e cada mudança de estado aparece no log.
 
+Enquanto esses LEDs não estão ligados, o **LED RGB da própria placa** mostra
+os mesmos dois estados: **azul** é o LED de modo (pisca no tempo do repeat),
+**vermelho** é o do looper (aceso gravando, piscando duas vezes por volta
+tocando), e **magenta** são os dois acesos ao mesmo tempo. Ele fica no GPIO 48
+ou no 38, conforme a revisão do DevKitC-1. O firmware usa o 48; se o LED não
+acender, troque `STATUS_RGB_PIN` para 38 no topo de [src/main.cpp](src/main.cpp).
+
 ## O spike de armazenamento
 
 O env `agbau_storage` ([bench/agbau_storage.cpp](bench/agbau_storage.cpp)) é a

@@ -22,7 +22,8 @@
  * already on its pin of the final map: record, play, overdub, hold 1s to
  * erase. Both as agbau/docs/looper.md specifies; with one bass on the bench,
  * repeat has two divisions to choose from - 4 per bar until b1 is struck in
- * repeat, 2 after. The LEDs are driven on their final pins (GPIO15 mode,
+ * repeat, 2 after. The board's own RGB LED shows both LEDs' states (mode in
+ * blue, looper in red), and the LEDs are also driven on their final pins (GPIO15 mode,
  * GPIO8 looper) whether or not anything is wired there, and every change of
  * state is logged.
  *
@@ -102,6 +103,17 @@ static_assert(MODE_ROW == VOICE_KEYS && VOICE_KEYS < BUTTONS,
 // The two LEDs, on their pins of the final map. Nothing on the bench yet.
 #define MODE_LED_PIN   15
 #define LOOPER_LED_PIN 8
+
+// Until they are wired, the DevKitC-1's own RGB LED (a WS2812) shows the
+// same two states, one colour each: mode blue, looper red, both magenta.
+// It sits on GPIO48 or GPIO38 depending on the board revision; 48 is the
+// core's default (RGB_BUILTIN). If it stays dark, try 38. Neither pin is
+// used by the Agbau's final map for exactly this reason.
+#ifndef STATUS_RGB_PIN
+  #define STATUS_RGB_PIN 48
+#endif
+// Out of 255. The LED sits a few cm from the eye on a bench; full is glaring.
+#define STATUS_RGB_LEVEL 32
 
 struct DirectButtons {
   void driveColumn(uint8_t) {}
@@ -211,6 +223,9 @@ void setup() {
   pinMode(PEDAL_PIN, INPUT_PULLUP);
   pinMode(MODE_LED_PIN, OUTPUT);
   pinMode(LOOPER_LED_PIN, OUTPUT);
+  // Off, and the RMT channel set up here rather than on the first change
+  // in loop().
+  rgbLedWrite(STATUS_RGB_PIN, 0, 0, 0);
   for (int b = 0; b < VOICE_KEYS; b++) {
     char name[8];
     voiceName(kButtonVoice[b], name, sizeof(name));
@@ -278,8 +293,21 @@ void loop() {
 
   // The LEDs follow the audio task's state; read unsynchronised, as the
   // DEBUG_ENGINE counters are - a stale read is one LED a block late.
-  digitalWrite(MODE_LED_PIN, gPerf.modeLed() ? HIGH : LOW);
-  digitalWrite(LOOPER_LED_PIN, gPerf.looperLed() ? HIGH : LOW);
+  const bool modeLit = gPerf.modeLed(), looperLit = gPerf.looperLed();
+  digitalWrite(MODE_LED_PIN, modeLit ? HIGH : LOW);
+  digitalWrite(LOOPER_LED_PIN, looperLit ? HIGH : LOW);
+  // The RGB LED only on a change: each write is a blocking ~30us RMT
+  // transfer, a stall in the key scan, so it happens a few times a second
+  // at most (the beat and the loop's quarters), never every pass.
+  {
+    static int8_t shown = -1;
+    const int8_t now = (modeLit ? 1 : 0) | (looperLit ? 2 : 0);
+    if (now != shown) {
+      rgbLedWrite(STATUS_RGB_PIN, looperLit ? STATUS_RGB_LEVEL : 0, 0,
+                  modeLit ? STATUS_RGB_LEVEL : 0);
+      shown = now;
+    }
+  }
 
 #if DEBUG_TRIGGERS
   // Every change of repeat or looper state, once, from the same

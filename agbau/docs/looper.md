@@ -341,7 +341,8 @@ pedal no GPIO39. Com eles se ouve todo o repeat:
 - os bugs 5 e 7 de propósito: segurar o p3, trocar de modo, soltar.
 
 Os LEDs não estão ligados. O firmware já escreve nos pinos finais deles
-(GPIO15 modo, GPIO8 looper), e cada mudança de estado do repeat e do looper
+(GPIO15 modo, GPIO8 looper) e espelha os dois no LED RGB da placa (modo em
+azul, looper em vermelho, os dois juntos em magenta), e cada mudança de estado do repeat e do looper
 sai na serial (`REPEAT ...`, `LOOP ...`). Para o looper, a
 bancada tem desde 11/10/2026 um quinto botão no **GPIO39**, ao GND, que é o
 pino do pedal no mapa final ([circuit.md](circuit.md)). Assim nada muda de
