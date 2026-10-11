@@ -44,6 +44,19 @@ quando não há nota ativa). Precisa de teste equivalente a
 do Agbau (baixos: `0.01, 0.0, 1.0, 1.0`; percussão: `0.01, 3.0, 0.0, 3.0`;
 ganzás: `0.01, 0.0, 1.0, 0.1` com loop).
 
+**Não é um ADSR genérico — são dois padrões de uso opostos com a mesma
+classe**, selecionados pela flag `releaseOnNoteOff` (`render.cpp:84-104`):
+
+| Grupo | ADSR (A, D, S, R) | `releaseOnNoteOff` | Comportamento real |
+|---|---|---|---|
+| Baixos (1–8) | `0.01, 0.0, 1.0, 1.0` | `true` (padrão) | Sustenta no nível 1 enquanto a nota estiver ligada; note-off manda pro release de 1s. Instrumento convencional note-on/note-off. |
+| Percussão (1–8, exceto ganzás) | `0.01, 3.0, 0.0, 3.0` | **`false`** | O decay de 3s *é* o som inteiro (sustain=0, já chega em silêncio no fim do decay). Note-off é **ignorado** — `noteOff()` só chama `release()` se a flag for true. Um toque rápido ainda deixa o hit decair sozinho até o fim. |
+| Ganzás (percussão 3 e 7) | `0.01, 0.0, 1.0, 0.1` + loop | `true` (sobrescrito) | Ataque instantâneo, sustain em 1 enquanto o buffer faz loop (nunca chama `release()` por conta própria); só sai do loop quando chega o note-off, com release de 100ms. Funciona como instrumento sustentado, não one-shot. |
+
+O processador novo em `AudioBlock` precisa expor esse mesmo seletor
+(ignora note-off vs obedece note-off) por voz — sem ele a percussão do
+Agbau se comporta como baixo, ou vice-versa.
+
 ### 2. Dezesseis vozes
 
 A estrutura voice-outer de `audioUpdate()` já soma vozes concorrentes; o
