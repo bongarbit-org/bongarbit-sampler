@@ -53,10 +53,11 @@ Em int16 caem para **8,995 MB**, e o N16R8 tem **8,389 MB** de PSRAM
 Há um corte que não muda o som em nada: nas percussões que não são ganzá, o
 decay linear de 3 s chega a zero em A+D = 3,01 s e o sustain é 0, então todo
 frame depois disso é multiplicado por 0 (`p2.2.1`, `p5.3.*`, `p6.3.2-3`).
-Somando a isso o corte de caudas abaixo de −60 dBFS (`p4.3.1` e `p8.3.1` têm
-mais da metade do arquivo em silêncio), o kit cai para **8,279 MB**. Cabe — por
-~110 KB, contra uma PSRAM que nunca está inteira livre. Não é margem.
-`tools/agbau_kit.py` reproduz esses números.
+Somando a isso o corte de caudas abaixo de −60 dBFS, com 10 ms de fade em cada
+corte (`p4.3.1` e `p8.3.1` têm mais da metade do arquivo em silêncio), o kit
+cai para **8,286 MB**. Cabe — por ~103 KB, contra uma PSRAM que nunca está
+inteira livre. Não é margem. `tools/agbau_kit.py` reproduz esses números
+(`--trim-envelope --trim-tail-db -60`).
 
 Duas saídas, e a escolha fica para depois de medir as duas na placa
 (`src/test_agbau_storage.cpp`, env `agbau_storage`):
