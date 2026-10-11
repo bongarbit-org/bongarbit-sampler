@@ -226,7 +226,14 @@ Um cuidado: o DevKitC-1 liga o LED RGB endereçável no GPIO48 ou no GPIO38,
 conforme a revisão da placa. Evitar os dois até conferir na placa real.
 
 O mapa explícito, com a correspondência pino a pino do Pro Micro, fica em
-[agbau-circuit.md](agbau-circuit.md).
+[agbau-circuit.md](agbau-circuit.md): colunas em 4–7, linhas em 1/2/42/41,
+modo e pedal em 40/39, LEDs em 15/8. Foi lido das nets do PCB, não do
+esquemático, e o PCB confirma a direção dos diodos (tecla entre linha e anodo,
+catodo na coluna). Ele também mostrou três coisas que o `.ino` não explica: o
+botão de modo do `.ino` (pino 15) não está ligado na placa, e o único conector
+de botão livre (J6) vai no A0 — **conferir no instrumento antes de fiar**;
+dezesseis headers (J24–J39) ligam cada coluna ao GND e, se algo estiver plugado
+neles, a matriz lê errado; e J4 é uma saída MIDI DIN que o firmware nunca usou.
 
 ### 5. Firmware integrado
 

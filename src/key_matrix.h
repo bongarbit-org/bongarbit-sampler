@@ -18,8 +18,10 @@
  *
  * THE SCAN DIRECTION IS NOT A CHOICE
  *
- * The Agbau board has a diode in series with every key (Agbaixo_BOM.csv: 16
- * diodes), conducting from the row side to the column side. The Arduino's
+ * The Agbau board has a diode in series with every key, conducting from the
+ * row side to the column side: on Agbaixo_PCB.kicad_pcb each key connector
+ * (J8-J23) sits between a row and a diode's anode, and the cathodes meet on
+ * the columns (docs/agbau-circuit.md). The Arduino's
  * Keypad library (Keypad.cpp:83-100) scans accordingly: rows are inputs with
  * pull-ups, one column at a time is driven LOW, the rest float. A pressed
  * key then pulls its row low through a forward-biased diode. Scanned the

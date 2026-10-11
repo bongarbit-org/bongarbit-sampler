@@ -154,7 +154,7 @@ Only `src/kick_normalizado_data.h` is included by the firmware. `src/kick_data.h
 
 ## Pin constraints — N16R8 specific
 
-Full wiring rationale, including the PCM5102A control pins (`SCK`→GND for internal clock, `XSMT`→3V3 or output stays muted) and the common-ground requirement, is in [docs/circuit.md](docs/circuit.md). Read it before changing any pin assignment.
+Full wiring rationale, including the PCM5102A control pins (`SCK`→GND for internal clock, `XSMT`→3V3 or output stays muted) and the common-ground requirement, is in [docs/circuit.md](docs/circuit.md). Read it before changing any pin assignment. The Agbau's map (another instrument on the same board, see [docs/agbau-migration.md](docs/agbau-migration.md)) is [docs/agbau-circuit.md](docs/agbau-circuit.md), read from the nets of the Agbau's own PCB; it lists two things on that PCB to check on the physical instrument before wiring anything.
 
 The trap: **GPIO 33–37 are consumed by the Octal PSRAM** on R8 modules. Generic ESP32-S3 pinout guides list them as free and suggest them for VSPI; using them here bricks PSRAM. SD therefore sits on HSPI (10–13). Also unusable: 0/3/45/46 (strapping), 26–32 (flash), 43/44 (UART0), 19/20 (native USB).
 
