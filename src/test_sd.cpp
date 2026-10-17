@@ -43,14 +43,13 @@
 #include "SD.h"
 #include "SPI.h"
 
-/*
-Uncomment and set up if you want to use custom pins for the SPI communication
+// Custom pins to match this project's actual wiring (see docs/circuit.md) -
+// NOT the ESP32-S3 defaults from the table above.
 #define REASSIGN_PINS
-int sck = -1;
-int miso = -1;
-int mosi = -1;
-int cs = -1;
-*/
+int sck = 11;
+int miso = 10;
+int mosi = 12;
+int cs = 13;
 
 void listDir(fs::FS &fs, const char *dirname, uint8_t levels) {
   Serial.printf("Listing directory: %s\n", dirname);

@@ -37,14 +37,14 @@ qualquer variante do ESP32-S3.
 
 | Sinal | GPIO ESP32-S3 | Vai para | Observação |
 |---|---|---|---|
-| I2S BCK  | GPIO 16 | PCM5102A `BCK`  | Default M16 (`seti2sPins`) |
-| I2S WS (LRCK) | GPIO 17 | PCM5102A `LCK`  | Default M16 |
-| I2S DOUT | GPIO 18 | PCM5102A `DIN`  | Default M16 — note a inversão de nome (DOUT do ESP32 → DIN do DAC) |
+| I2S BCK  | GPIO 16 | PCM5102A `BCK`  | igual ao default M16 |
+| I2S WS (LRCK) | GPIO 18 | PCM5102A `LCK`  | **custom** — trocado do default (17) via `seti2sPins()`, para bater com a fiação da placa de ilha |
+| I2S DOUT | GPIO 17 | PCM5102A `DIN`  | **custom** — trocado do default (18) via `seti2sPins()`; note também a inversão de nome (DOUT do ESP32 → DIN do DAC) |
 | — | GPIO 21 | (não conectado) | Entrada I2S (DIN) padrão da M16, não usada neste projeto |
-| SD CS    | GPIO 10 | Leitor microSD `CS`   | HSPI |
-| SD SCLK  | GPIO 12 | Leitor microSD `SCK`  | HSPI |
-| SD MISO  | GPIO 13 | Leitor microSD `MISO` (DO/CIPO) | HSPI |
-| SD MOSI  | GPIO 11 | Leitor microSD `MOSI` (DI/COPI) | HSPI |
+| SD CS    | GPIO 13 | Leitor microSD `CS`   | HSPI — custom, trocado do default (10) |
+| SD SCLK  | GPIO 11 | Leitor microSD `SCK`  | HSPI — custom, trocado do default (12) |
+| SD MISO  | GPIO 10 | Leitor microSD `MISO` (DO/CIPO) | HSPI — custom, trocado do default (13) |
+| SD MOSI  | GPIO 12 | Leitor microSD `MOSI` (DI/COPI) | HSPI — custom, trocado do default (11) |
 | Trigger  | GPIO 4  | Botão → GND | `INPUT_PULLUP`, ativo em nível baixo |
 | Pad 1 (`1.wav`) | GPIO 5  | Botão → GND | `INPUT_PULLUP`, ativo em nível baixo |
 | Pad 2 (`2.wav`) | GPIO 6  | Botão → GND | `INPUT_PULLUP`, ativo em nível baixo |
@@ -97,10 +97,10 @@ Usa o barramento HSPI dedicado (não compartilhado com flash/PSRAM):
 
 | Pino do módulo SD | GPIO |
 |---|---|
-| CS  | 10 |
-| SCK | 12 |
-| MOSI (DI) | 11 |
-| MISO (DO) | 13 |
+| CS  | 13 |
+| SCK | 11 |
+| MOSI (DI) | 12 |
+| MISO (DO) | 10 |
 | VCC | 3V3 (a maioria dos módulos leitores de SD tem regulador para 3.3V; **não** ligar direto em 5V a menos que o módulo diga suportar) |
 | GND | GND comum |
 
@@ -148,17 +148,17 @@ raiz do cartão SD, carregado inteiro na PSRAM no boot.
    Pad 3 ───────┤ GPIO7                |
                 |                      |
                 | GPIO16 (BCK)  ───────┼───► PCM5102A BCK
-                | GPIO17 (WS)   ───────┼───► PCM5102A LCK
-                | GPIO18 (DOUT) ───────┼───► PCM5102A DIN
+                | GPIO18 (WS)   ───────┼───► PCM5102A LCK
+                | GPIO17 (DOUT) ───────┼───► PCM5102A DIN
                 |                      |     PCM5102A SCK  → GND
                 |                      |     PCM5102A FMT  → GND
                 |                      |     PCM5102A XSMT → 3V3
                 |                      |     PCM5102A FLT/DEMP → GND
                 |                      |
-                | GPIO10 (CS)   ───────┼───► SD CS
-                | GPIO12 (SCK)  ───────┼───► SD SCK
-                | GPIO11 (MOSI) ───────┼───► SD MOSI
-                | GPIO13 (MISO) ◄──────┼──── SD MISO
+                | GPIO13 (CS)   ───────┼───► SD CS
+                | GPIO11 (SCK)  ───────┼───► SD SCK
+                | GPIO12 (MOSI) ───────┼───► SD MOSI
+                | GPIO10 (MISO) ◄──────┼──── SD MISO
                 |                      |
                 |  3V3 / GND (comum) ──┼───► DAC, SD, botão
                 +----------------------+

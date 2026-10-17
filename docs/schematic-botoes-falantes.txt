@@ -1,0 +1,113 @@
+BOTÕES FALANTES (ESP32-S3) — esquema reconstruído de botoes-falantes-esp32s3.diy
+================================================================================
+Gerado com a skill diy-netlist (~/.claude/skills/diy-netlist), a partir dos
+traços/pads/labels do arquivo .diy. Convenção: nome do pad = texto mais
+próximo dele no desenho; componente = retângulo (BlankBoard) cujo label
+("DAC", "Micro SD", "ESP32-S3"...) está dentro dele.
+
+NOTA: o arquivo tem o board inteiro desenhado DUAS VEZES (uma cópia em
+y≈0.7-3.3, outra idêntica e espelhada em y≈4.6-6.3 - mesmos labels, mesma
+fiação). Este esquema documenta só uma cópia; confirme se a segunda é
+intencional (board gêmeo / referência) ou só um resto de copiar-colar.
+
+Pontos marcados com (?) têm confiança menor - confira no DIYLC antes de
+soldar.
+
+
+                        +3V3 ───────────────────┬──────────────────┐
+                                                 │                  │
+                                            VCC ─┤                  ├─ VCC
+                                        ┌────────┴────────┐   ┌─────┴─────────┐
+                                        │    Micro SD     │   │  PCM5102A DAC │
+                                        │                 │   │               │
+                            CS  ────────┤ CS              │   │ LCK ──────────┤──── GPIO18
+                            MOSI────────┤ MOSI            │   │ DIN ──────────┤──── GPIO17
+                            CLK ────────┤ CLK             │   │ BCK ──────────┤──── GPIO16
+                            MISO────────┤ MISO        GND │   │ SCK       GND │
+                                        └─────────────┬───┘   └───┬───────┬───┘
+                                                       │           │       │
+                                                       └─────┬─────┴───────┘
+                                                             │  (DAC SCK amarrado
+                                                             │   direto no GND comum -
+                                                             │   clock automático interno,
+                                                             │   mesma convenção do projeto
+                                                             │   bongarbit-sampler)
+                                                            GND
+                                                             │
+        ┌────────────────────────────────────────────────────────────────────────────┐
+        │                                                                            │
+        │                        ESP32-S3 (DevKitC)                                 │
+        │                                                                            │
+        │   GPIO13 ───────────────────────────────────────────────────► SD  CS      │
+        │   GPIO12 ───────────────────────────────────────────────────► SD  MOSI    │
+        │   GPIO11 ───────────────────────────────────────────────────► SD  CLK     │
+        │   GPIO10 ◄──────────────────────────────────────────────────  SD  MISO    │
+        │                                                                            │
+        │   GPIO16 ───────────────────────────────────────────────────► DAC BCK     │
+        │   GPIO17 ───────────────────────────────────────────────────► DAC DIN     │
+        │   GPIO18 ───────────────────────────────────────────────────► DAC LCK     │
+        │                                                                            │
+        │   GPIO6  ──────► [ B1 ]──── GND        botão                              │
+        │   GPIO5  ──────► [ B2 ]──── GND        botão                              │
+        │   GPIO4  ──────► [ B3 ]──── GND        botão                              │
+        │                                                                            │
+        │   GPIO7  ──────┬──────────────────────┬──── GND                           │
+        │                │      (( P1 ))        R1                                  │
+        │                └──────────────────────┴──── 1M            piezo 1         │
+        │                                                                            │
+        │   GPIO2  ──────┬──────────────────────┬──── GND                           │
+        │                │      (( P2 ))        R2                                  │
+        │                └──────────────────────┴──── 1M            piezo 2         │
+        │                                                                            │
+        │   GPIO1  ──────┬──────────────────────┬──── GND                           │
+        │                │      (( P3 ))        R3                                  │
+        │                └──────────────────────┴──── 1M            piezo 3         │
+        │                                                                            │
+        │   GPIO8  ──────► SENSOR ──┬── VCC (3V3)                                   │
+        │                           └── GND          analógico, 3 pernas            │
+        │                                             (VCC/GND/sinal todas          │
+        │                                              resolvidas neste arquivo)    │
+        │                                                                            │
+        │   GPIO41 ──────► [ BM ]──── GND        botão de modo                      │
+        │   GPIO42 ──────[ R4 220R ]──► [ LM ]──── GND      LED (série com R4)      │
+        │                                                                            │
+        │   3V3 ───────────────────────────────────┐                                │
+        │   GND ─────────────────────────────────┐ │                                │
+        └──────────────────────────────────────────────────────────────────────────┘
+                                                    │ │
+                                                    │ └──── barramento 3V3 comum
+                                                    └──────── barramento GND comum
+                                                               (DAC, SD, B1-B3, BM, LM,
+                                                                Sensor, pernas de retorno
+                                                                dos 3 piezos)
+
+
+Legenda
+-------
+──►   fio/trilha direta entre dois pontos
+[ X ] botão / LED (componente de 2 pernas)
+(( X )) disco piezoelétrico (não é um componente formal no .diy - a posição
+        é inferida pelo label "Px" mais próximo; confira fisicamente)
+R1..R4  resistores (R1-R3 = sangria 1M em paralelo com cada piezo,
+        R4 = 220R em série com o LED)
+(?)     baixa confiança - reconstrução automática não fechou claramente
+        essa perna na mesma rede do sinal; revisar no DIYLC
+
+
+Pinos usados (resumo)
+----------------------
+GPIO1  → piezo 3 (analog)         GPIO10 → SD MISO
+GPIO2  → piezo 2 (analog)         GPIO11 → SD CLK/SCK
+GPIO4  → botão B3                 GPIO12 → SD MOSI
+GPIO5  → botão B2                 GPIO13 → SD CS
+GPIO6  → botão B1                 GPIO16 → DAC BCK
+GPIO7  → piezo 1 (analog)         GPIO17 → DAC DIN
+GPIO8  → Sensor (VCC+GND+sinal)   GPIO18 → DAC LCK
+GPIO41 → botão de modo (BM)
+GPIO42 → LED de modo (LM), via R4 220R
+
+Diferença em relação ao pcb-artesanal.diy (bongarbit-sampler): aqui os
+números dos piezos vs. GPIO trocaram (GPIO7=piezo1 em vez de piezo3,
+GPIO1=piezo3 em vez de piezo1) - mesma pinagem de hardware, rótulos P1/P2/P3
+remapeados. O Sensor do GPIO8, que no outro arquivo estava incompleto (só
+1 perna), aqui está com as 3 pernas (VCC, GND, sinal) resolvidas.
